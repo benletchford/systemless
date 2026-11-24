@@ -18052,7 +18052,12 @@ impl super::TrapDispatcher {
     /// still consulting guest memory on every call. The latter is important:
     /// applications may animate or directly modify an offscreen ColorTable.
     fn read_color_table_ptr_clut(&self, bus: &MacMemoryBus, ctab_ptr: u32) -> [[u16; 3]; 256] {
-        let entry_count = usize::from(bus.read_word(ctab_ptr.wrapping_add(6)).min(255)) + 1;
+        use crate::quickdraw::color::{
+            color_table_entry_count, decode_color_table_clut, OutOfRangeColorIndex,
+        };
+
+        let flags = bus.read_word(ctab_ptr.wrapping_add(4));
+        let entry_count = color_table_entry_count(bus.read_word(ctab_ptr.wrapping_add(6)));
         let byte_count = entry_count * 8;
         let mut entries = [0u8; 256 * 8];
         bus.read_bytes_into(ctab_ptr.wrapping_add(8), &mut entries[..byte_count]);
@@ -18060,25 +18065,12 @@ impl super::TrapDispatcher {
         // Treat guest ColorTables as overrides on top of the Color Manager CLUT.
         // Some scratch/offscreen tables do not populate every logical index;
         // zero-filling the rest would collapse unrelated indices to black.
-        let mut clut = *self.color_manager_clut;
-        // Device ColorTables are addressed by entry position. Their
-        // ColorSpec.value low byte is a Color Manager client ID, not a pixel
-        // index; the high byte retains per-entry flags. Inside Macintosh
-        // Volume V (1986), pp. V-142..V-143.
-        let device_table = (bus.read_word(ctab_ptr.wrapping_add(4)) & 0x8000) != 0;
-        for (position, entry) in entries[..byte_count].chunks_exact(8).enumerate() {
-            let value = u16::from_be_bytes([entry[0], entry[1]]) as usize;
-            let red = u16::from_be_bytes([entry[2], entry[3]]);
-            let green = u16::from_be_bytes([entry[4], entry[5]]);
-            let blue = u16::from_be_bytes([entry[6], entry[7]]);
-            let index = if device_table {
-                position
-            } else {
-                value.min(255)
-            };
-            clut[index] = [red, green, blue];
-        }
-        clut
+        decode_color_table_clut(
+            flags,
+            &entries[..byte_count],
+            &self.color_manager_clut,
+            OutOfRangeColorIndex::ClampToLast,
+        )
     }
 
     /// Read a 256-entry CLUT from a CTabHandle in guest memory.

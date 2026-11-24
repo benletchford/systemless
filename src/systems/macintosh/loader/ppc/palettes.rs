@@ -1315,16 +1315,44 @@ pub(crate) fn ppc_read_itable_ctable(
     let ctable = memory
         .read_u32_be(ctable_handle)
         .filter(|ctable| *ctable != 0)?;
-    let seed = memory.read_u32_be(ctable)?;
-    let last_index = memory.read_u16_be(ctable.checked_add(6)?)? as i16;
+    let mut header = [0u8; 8];
+    memory.read_bytes_into(ctable, &mut header)?;
+    let seed = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
+    let last_index = i16::from_be_bytes([header[6], header[7]]);
     let entry_count = if last_index < 0 {
         0
     } else {
-        usize::from(last_index as u16).saturating_add(1).min(256)
+        crate::quickdraw::color::color_table_entry_count(last_index as u16)
     };
     let mut colors = Vec::with_capacity(entry_count);
+    let entries_addr = ctable.checked_add(8)?;
+    let byte_count = entry_count * 8;
+    let mut entries = [0u8; 256 * 8];
+    if memory
+        .read_bytes_into(entries_addr, &mut entries[..byte_count])
+        .is_some()
+    {
+        for entry in entries[..byte_count].chunks_exact(8) {
+            let value = u16::from_be_bytes([entry[0], entry[1]]);
+            let Ok(index) = u8::try_from(value) else {
+                continue;
+            };
+            if reserved[usize::from(index)] {
+                continue;
+            }
+            colors.push((
+                index,
+                [
+                    u16::from_be_bytes([entry[2], entry[3]]),
+                    u16::from_be_bytes([entry[4], entry[5]]),
+                    u16::from_be_bytes([entry[6], entry[7]]),
+                ],
+            ));
+        }
+        return Some((seed, colors));
+    }
     for slot in 0..entry_count {
-        let entry = ctable.checked_add(8 + slot as u32 * 8)?;
+        let entry = entries_addr.checked_add(slot as u32 * 8)?;
         let value = memory.read_u16_be(entry)?;
         let Ok(index) = u8::try_from(value) else {
             continue;
@@ -2183,21 +2211,43 @@ pub(crate) fn ppc_read_ctable_clut(
     ctable_handle: u32,
     base_clut: &[[u16; 3]; 256],
 ) -> Option<[[u16; 3]; 256]> {
+    use crate::quickdraw::color::{
+        color_table_entry_count, decode_color_table_clut, OutOfRangeColorIndex,
+    };
+
     let ctable = memory
         .read_u32_be(ctable_handle)
         .filter(|ctable| *ctable != 0)?;
-    let flags = memory.read_u16_be(ctable.checked_add(4)?)?;
-    let last_entry = usize::from(memory.read_u16_be(ctable.checked_add(6)?)?);
-    let entry_count = last_entry.saturating_add(1).min(256);
+    let mut header = [0u8; 4];
+    memory.read_bytes_into(ctable.checked_add(4)?, &mut header)?;
+    let flags = u16::from_be_bytes([header[0], header[1]]);
+    let last_entry = u16::from_be_bytes([header[2], header[3]]);
+    let entry_count = color_table_entry_count(last_entry);
+    let byte_count = entry_count * 8;
+    let entries_addr = ctable.checked_add(8)?;
+    let mut entries = [0u8; 256 * 8];
+    if memory
+        .read_bytes_into(entries_addr, &mut entries[..byte_count])
+        .is_some()
+    {
+        return Some(decode_color_table_clut(
+            flags,
+            &entries[..byte_count],
+            base_clut,
+            OutOfRangeColorIndex::Skip,
+        ));
+    }
+    if flags & 0x8000 != 0 {
+        return None;
+    }
     let mut clut = *base_clut;
     for slot in 0..entry_count {
-        let entry = ctable.checked_add(8 + slot as u32 * 8)?;
+        let entry = entries_addr.checked_add(slot as u32 * 8)?;
         let value = usize::from(memory.read_u16_be(entry)?);
-        let index = if flags & 0x8000 != 0 { slot } else { value };
-        if index >= clut.len() {
+        if value >= clut.len() {
             continue;
         }
-        clut[index] = [
+        clut[value] = [
             memory.read_u16_be(entry.checked_add(2)?)?,
             memory.read_u16_be(entry.checked_add(4)?)?,
             memory.read_u16_be(entry.checked_add(6)?)?,
