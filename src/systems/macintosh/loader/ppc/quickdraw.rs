@@ -5083,40 +5083,57 @@ pub(crate) fn ppc_color_tables_share_index_space(
     src_ctable_handle: Option<u32>,
     dst_ctable_handle: Option<u32>,
 ) -> bool {
-    let identity = |memory: &mut PpcSectionMem, handle: Option<u32>| {
+    let header = |memory: &mut PpcSectionMem, handle: Option<u32>| -> Option<(u32, usize)> {
         let table = handle
             .and_then(|handle| memory.read_u32_be(handle))
             .filter(|table| *table != 0)?;
+        let mut bytes = [0u8; 4];
+        memory.read_bytes_into(table.checked_add(4)?, &mut bytes)?;
+        let flags = u16::from_be_bytes([bytes[0], bytes[1]]);
+        if flags & 0xc000 != 0 {
+            return None;
+        }
+        let entry_count = usize::from(u16::from_be_bytes([bytes[2], bytes[3]])).checked_add(1)?;
+        (entry_count <= 256).then_some((table, entry_count))
+    };
+    let (Some((src_table, src_count)), Some((dst_table, dst_count))) = (
+        header(memory, src_ctable_handle),
+        header(memory, dst_ctable_handle),
+    ) else {
+        return false;
+    };
+    if src_count != dst_count {
+        return false;
+    }
+    let identity = |memory: &mut PpcSectionMem, table: u32, entry_count: usize| {
         // Compare the indexed colors themselves, including resource tables
         // with a zero ctSeed. A seed is not evidence against content equality.
         // Remapping an identical offscreen table through a different current
         // device would change the pixel indices used by later palette changes.
-        let flags = memory.read_u16_be(table.checked_add(4)?)?;
-        if flags & 0xc000 != 0 {
-            return None;
-        }
-        let entry_count = usize::from(memory.read_u16_be(table.checked_add(6)?)?).checked_add(1)?;
-        if entry_count > 256 {
-            return None;
-        }
+        let byte_count = entry_count * 8;
+        let mut entries = [0u8; 256 * 8];
+        memory.read_bytes_into(table.checked_add(8)?, &mut entries[..byte_count])?;
         let mut colors = [None; 256];
-        for slot in 0..entry_count {
-            let entry = table.checked_add(8 + u32::try_from(slot).ok()?.checked_mul(8)?)?;
-            let index = usize::from(memory.read_u16_be(entry)?);
+        for entry in entries[..byte_count].chunks_exact(8) {
+            let index = usize::from(u16::from_be_bytes([entry[0], entry[1]]));
             if index >= colors.len() || colors[index].is_some() {
                 return None;
             }
             colors[index] = Some([
-                memory.read_u16_be(entry.checked_add(2)?)?,
-                memory.read_u16_be(entry.checked_add(4)?)?,
-                memory.read_u16_be(entry.checked_add(6)?)?,
+                u16::from_be_bytes([entry[2], entry[3]]),
+                u16::from_be_bytes([entry[4], entry[5]]),
+                u16::from_be_bytes([entry[6], entry[7]]),
             ]);
         }
         Some(colors)
     };
-    let src_identity = identity(memory, src_ctable_handle);
-    let dst_identity = identity(memory, dst_ctable_handle);
-    matches!((src_identity, dst_identity), (Some(src), Some(dst)) if src == dst)
+    matches!(
+        (
+            identity(memory, src_table, src_count),
+            identity(memory, dst_table, dst_count),
+        ),
+        (Some(src), Some(dst)) if src == dst
+    )
 }
 
 pub(crate) fn ppc_copy_bits_clut(
