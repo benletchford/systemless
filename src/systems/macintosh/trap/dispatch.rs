@@ -1628,7 +1628,8 @@ pub struct TrapDispatcher {
     pub(crate) vfs_metadata: SharedProcessValue<crate::process_context::ProcessVfsMetadataMap>,
     /// Canonical process directory catalogue shared with the native adapter.
     /// Files (1992), pp. 2-27--2-29 and 2-190--2-192.
-    pub(crate) vfs_directories: SharedProcessValue<Vec<VfsDirectory>>,
+    pub(crate) vfs_directories:
+        SharedProcessValue<crate::process_context::ProcessVfsDirectoryRecords>,
     /// Read-only disk-image volumes mounted alongside the synthetic boot volume.
     pub(crate) vfs_volumes: SharedProcessValue<Vec<VfsVolume>>,
     /// Open working directories keyed by working directory reference number.

@@ -106,7 +106,7 @@ pub(crate) struct PpcDispatchContext<'a> {
     pub(crate) quickdraw_text_size: &'a mut i16,
     pub(crate) cursor_state: &'a SharedProcessCursorState,
     pub(crate) vfs_volumes: &'a [PpcVfsVolumeRecord],
-    pub(crate) vfs_directories: &'a mut Vec<PpcVfsDirectory>,
+    pub(crate) vfs_directories: &'a mut ProcessVfsDirectoryRecords,
     pub(crate) next_vfs_dir_id: &'a mut u32,
     pub(crate) default_dir_id: u32,
     pub(crate) working_directories: &'a mut HashMap<i16, ProcessWorkingDirectory>,

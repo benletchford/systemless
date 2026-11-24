@@ -58,7 +58,7 @@ pub(super) struct PpcFileManagerContext<'a> {
     pub(super) files: &'a mut Vec<PpcFileRecord>,
     pub(super) writable_refnums: &'a mut HashSet<u16>,
     pub(super) vfs_files: &'a mut ProcessVfsFileRecords,
-    pub(super) vfs_directories: &'a mut Vec<PpcVfsDirectory>,
+    pub(super) vfs_directories: &'a mut ProcessVfsDirectoryRecords,
     pub(super) deleted_vfs_file_paths: &'a mut Vec<String>,
     pub(super) vfs_resource_files: &'a mut ProcessVfsResourceFileRecords,
     pub(super) resource_files: &'a mut Vec<PpcResourceFileRecord>,

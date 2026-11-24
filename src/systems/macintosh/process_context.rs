@@ -1310,7 +1310,7 @@ pub struct ProcessFileSystemState {
     pub(crate) stdio_streams: HashMap<u32, ProcessStdioStreamRecord>,
     pub(crate) vfs_volumes: SharedProcessValue<Vec<ProcessVfsVolumeRecord>>,
     pub(crate) next_vfs_volume_ref_num: SharedProcessValue<i16>,
-    pub(crate) vfs_directories: SharedProcessValue<Vec<ProcessVfsDirectory>>,
+    pub(crate) vfs_directories: SharedProcessValue<ProcessVfsDirectoryRecords>,
     pub(crate) next_vfs_dir_id: SharedProcessValue<u32>,
     pub(crate) default_dir_id: SharedProcessValue<u32>,
     pub(crate) classic_vfs_metadata: SharedProcessValue<ProcessVfsMetadataMap>,
@@ -1332,7 +1332,7 @@ pub struct ProcessFileSystemState {
 pub(crate) struct PublishedVfsCatalogue {
     files_version: u64,
     resource_files_version: u64,
-    directories_fingerprint: u64,
+    directories_revision: u64,
     classic_metadata_ptr: usize,
     classic_metadata_revision: u64,
     dirty_paths: Vec<String>,
@@ -1581,14 +1581,14 @@ impl ProcessFileSystemState {
         // list changed since the previous publish and no deletions are queued.
         let files_version = self.vfs_files.version();
         let resource_files_version = self.vfs_resource_files.version();
-        let directories_fingerprint = process_vfs_directories_fingerprint(&self.vfs_directories);
+        let directories_revision = self.vfs_directories.revision();
         let classic_metadata_ptr = Rc::as_ptr(&self.classic_vfs_metadata.0) as usize;
         let classic_metadata_revision = self.classic_vfs_metadata.revision;
         if self.deleted_vfs_file_paths.is_empty() {
             if let Some(published) = self.published_catalogue.as_mut() {
                 if published.files_version == files_version
                     && published.resource_files_version == resource_files_version
-                    && published.directories_fingerprint == directories_fingerprint
+                    && published.directories_revision == directories_revision
                     && published.classic_metadata_ptr == classic_metadata_ptr
                     && published.classic_metadata_revision == classic_metadata_revision
                 {
@@ -1714,7 +1714,7 @@ impl ProcessFileSystemState {
             PublishedVfsCatalogue {
                 files_version: self.vfs_files.version(),
                 resource_files_version: self.vfs_resource_files.version(),
-                directories_fingerprint,
+                directories_revision,
                 classic_metadata_ptr: Rc::as_ptr(&self.classic_vfs_metadata.0) as usize,
                 classic_metadata_revision: self.classic_vfs_metadata.revision,
                 dirty_paths,
@@ -1813,21 +1813,6 @@ impl ProcessFileSystemState {
                     .starts_with(&prefix.to_ascii_lowercase())
         });
     }
-}
-
-fn process_vfs_directories_fingerprint(directories: &[ProcessVfsDirectory]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64 ^ (directories.len() as u64);
-    for directory in directories {
-        hash ^= u64::from(directory.dir_id);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        hash ^= directory.path.len() as u64;
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        for &byte in directory.path.as_bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-    hash
 }
 
 /// Directory IDs keyed by ASCII-lowercased path. Where several directories
@@ -4159,9 +4144,72 @@ impl SharedProcessValue<Vec<ProcessVfsVolumeRecord>> {
     }
 }
 
-impl SharedProcessValue<Vec<ProcessVfsDirectory>> {
+fn next_vfs_directories_revision() -> u64 {
+    static NEXT_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Process-owned VFS directory list with a monotonic mutation revision.
+/// Read-only `Deref` leaves `revision` untouched; `DerefMut` and non-empty
+/// construction assign a fresh global revision so `publish_native_vfs_catalogue`
+/// detects every mutation, shared-handle edit, `attach_to` transfer, or replacement
+/// in O(1) without hashing directory paths on every execution slice.
+#[derive(Debug, Default)]
+pub(crate) struct ProcessVfsDirectoryRecords {
+    entries: Vec<ProcessVfsDirectory>,
+    revision: u64,
+}
+
+impl Clone for ProcessVfsDirectoryRecords {
+    fn clone(&self) -> Self {
+        Self::from(self.entries.clone())
+    }
+}
+
+impl From<Vec<ProcessVfsDirectory>> for ProcessVfsDirectoryRecords {
+    fn from(entries: Vec<ProcessVfsDirectory>) -> Self {
+        let revision = if entries.is_empty() {
+            0
+        } else {
+            next_vfs_directories_revision()
+        };
+        Self { entries, revision }
+    }
+}
+
+impl ProcessVfsDirectoryRecords {
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+}
+
+impl std::ops::Deref for ProcessVfsDirectoryRecords {
+    type Target = Vec<ProcessVfsDirectory>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
+impl std::ops::DerefMut for ProcessVfsDirectoryRecords {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.revision = next_vfs_directories_revision();
+        &mut self.entries
+    }
+}
+
+impl<'a> IntoIterator for &'a ProcessVfsDirectoryRecords {
+    type Item = &'a ProcessVfsDirectory;
+    type IntoIter = std::slice::Iter<'a, ProcessVfsDirectory>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.iter()
+    }
+}
+
+impl SharedProcessValue<ProcessVfsDirectoryRecords> {
     pub(crate) fn replace(&self, directories: Vec<ProcessVfsDirectory>) {
-        self.with_mut(|current| *current = directories);
+        self.with_mut(|current| **current = directories);
     }
 
     pub(crate) fn push(&self, directory: ProcessVfsDirectory) {
@@ -4173,7 +4221,7 @@ impl SharedProcessValue<Vec<ProcessVfsDirectory>> {
     }
 
     pub(crate) fn take(&self) -> Vec<ProcessVfsDirectory> {
-        self.with_mut(std::mem::take)
+        self.with_mut(|directories| std::mem::take(&mut **directories))
     }
 }
 
@@ -11276,7 +11324,7 @@ impl ProcessContext {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn attach_classic_vfs_catalogue(
         &self,
-        directories: &mut SharedProcessValue<Vec<ProcessVfsDirectory>>,
+        directories: &mut SharedProcessValue<ProcessVfsDirectoryRecords>,
         metadata: &mut SharedProcessValue<ProcessVfsMetadataMap>,
         locked_files: &mut SharedProcessValue<HashSet<String>>,
         next_dir_id: &mut SharedProcessValue<u32>,
@@ -14026,15 +14074,18 @@ mod tests {
     #[test]
     fn attached_classic_catalogues_share_mutations_while_clones_detach() {
         let context = ProcessContext::default();
-        let mut first_directories = SharedProcessValue::from_value(vec![ProcessVfsDirectory {
-            dir_id: 2,
-            parent_dir_id: 1,
-            path: String::new(),
-            creator: u32::from_be_bytes(*b"MACS"),
-            file_type: u32::from_be_bytes(*b"fold"),
-            finder_flags: 0,
-            dirty: false,
-        }]);
+        let mut first_directories = SharedProcessValue::from_value(
+            vec![ProcessVfsDirectory {
+                dir_id: 2,
+                parent_dir_id: 1,
+                path: String::new(),
+                creator: u32::from_be_bytes(*b"MACS"),
+                file_type: u32::from_be_bytes(*b"fold"),
+                finder_flags: 0,
+                dirty: false,
+            }]
+            .into(),
+        );
         let mut first_metadata =
             SharedProcessValue::<ProcessVfsMetadataMap>::default();
         let mut first_locked_files = SharedProcessValue::<HashSet<String>>::default();
@@ -14055,7 +14106,7 @@ mod tests {
 
         let mut second_metadata =
             SharedProcessValue::<ProcessVfsMetadataMap>::default();
-        let mut second_directories = SharedProcessValue::<Vec<ProcessVfsDirectory>>::default();
+        let mut second_directories = SharedProcessValue::<ProcessVfsDirectoryRecords>::default();
         let mut second_locked_files = SharedProcessValue::<HashSet<String>>::default();
         let mut second_next_dir_id = SharedProcessValue::from_value(16);
         let mut second_next_file_id = SharedProcessValue::from_value(32);
@@ -14136,15 +14187,18 @@ mod tests {
                 created_date: 1,
                 modified_date: 2,
             }]),
-            vfs_directories: SharedProcessValue::from_value(vec![ProcessVfsDirectory {
-                dir_id: 2,
-                parent_dir_id: 1,
-                path: String::new(),
-                creator: 0,
-                file_type: 0,
-                finder_flags: 0,
-                dirty: false,
-            }]),
+            vfs_directories: SharedProcessValue::from_value(
+                vec![ProcessVfsDirectory {
+                    dir_id: 2,
+                    parent_dir_id: 1,
+                    path: String::new(),
+                    creator: 0,
+                    file_type: 0,
+                    finder_flags: 0,
+                    dirty: false,
+                }]
+                .into(),
+            ),
             next_vfs_dir_id: SharedProcessValue::from_value(16),
             default_dir_id: SharedProcessValue::from_value(2),
             ..ProcessFileSystemState::default()
@@ -14621,6 +14675,52 @@ mod tests {
         assert_eq!(
             state.classic_vfs_metadata["Disc/Sub/NewFile"].parent_dir_id,
             200
+        );
+
+        // Read-only access through with_mut(&mut ProcessVfsDirectoryRecords -> &[...])
+        // keeps the revision intact, while mutating via a shared handle or replacing
+        // the SharedProcessValue invalidates the cached catalogue.
+        let cached_rev = state.vfs_directories.revision();
+        state.vfs_directories.with_mut(|dirs| {
+            assert_eq!(dirs.len(), 2);
+        });
+        assert_eq!(state.vfs_directories.revision(), cached_rev);
+
+        let shared_dirs = state.vfs_directories.shared_handle();
+        shared_dirs.with_mut(|dirs| dirs[1].dir_id = 250);
+        state.publish_native_vfs_catalogue();
+        assert_eq!(
+            state.classic_vfs_metadata["Disc/Sub/NewFile"].parent_dir_id,
+            250
+        );
+
+        state.vfs_directories = SharedProcessValue::from_value(
+            vec![
+                ProcessVfsDirectory {
+                    path: "Disc".to_string(),
+                    dir_id: 100,
+                    parent_dir_id: 2,
+                    creator: 0,
+                    file_type: 0,
+                    finder_flags: 0,
+                    dirty: false,
+                },
+                ProcessVfsDirectory {
+                    path: "Disc/Sub".to_string(),
+                    dir_id: 300,
+                    parent_dir_id: 100,
+                    creator: 0,
+                    file_type: 0,
+                    finder_flags: 0,
+                    dirty: false,
+                },
+            ]
+            .into(),
+        );
+        state.publish_native_vfs_catalogue();
+        assert_eq!(
+            state.classic_vfs_metadata["Disc/Sub/NewFile"].parent_dir_id,
+            300
         );
     }
 
