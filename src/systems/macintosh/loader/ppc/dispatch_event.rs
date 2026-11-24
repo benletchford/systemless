@@ -328,6 +328,12 @@ pub(crate) struct PpcRecurringUpdatePollState {
 }
 
 impl PpcRecurringUpdatePollState {
+    /// A serviced or newly invalidated region starts a fresh series of deliveries,
+    /// including when the new dirty rectangle has exactly the previous bounds.
+    pub(super) fn forget_window(&mut self, window: u32) {
+        self.windows.retain(|(seen, _, _)| *seen != window);
+    }
+
     fn reset(&mut self) {
         self.last_reenqueued = None;
         self.lr = 0;

@@ -1949,3 +1949,37 @@ fn hle_import_runner_fast_forwards_recurring_update_polls_for_get_and_wait_next_
         );
     }
 }
+
+#[test]
+fn serviced_update_reinvalidated_at_the_same_bounds_keeps_its_poll_cost() {
+    let mut app = load_pef_application(&synthetic_pef_with_import(b"GetNextEvent")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1400;
+    app.memory.add_region(scratch, vec![0; 0x100]);
+    let window = super::window_manager::create_test_cwindow(
+        &mut app, scratch, (0, 0, 100, 100), 0, true, u32::MAX,
+    );
+    app.current_gworld.with_mut(|port| *port = window);
+    let rect = scratch + 0x80;
+    let event = scratch + 0xa0;
+    ppc_write_rect(&mut app.memory, rect, 4, 4, 20, 20).unwrap();
+    app.set_tick_count(42);
+    app.set_clock_cycle_timing(100_000, 0);
+    let mut normal_cost = None;
+    for _ in 0..PPC_OS_EVENT_IDLE_POLL_FAST_FORWARD_THRESHOLD + 2 {
+        app.cpu.gpr[3] = window;
+        run_test_import(&mut app, PpcImportDispatcherTarget::EndUpdate);
+        app.cpu.gpr[3] = rect;
+        run_test_import(&mut app, PpcImportDispatcherTarget::InvalRect);
+        app.cpu.pc = app.entry_pc;
+        app.cpu.lr = PPC_HALT_PC;
+        app.cpu.gpr[3] = 1 << 6;
+        app.cpu.gpr[4] = event;
+        app.imports[0].dispatcher_target =
+            PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent);
+        let probe = app.run_with_hle_imports(1_000);
+        assert_eq!(app.memory.read_u16_be(event), Some(6));
+        assert_eq!(app.memory.read_u32_be(event + 2), Some(window));
+        let cost = ppc_run_result_cycles(probe.result);
+        assert_eq!(cost, *normal_cost.get_or_insert(cost));
+    }
+}

@@ -1225,6 +1225,7 @@ pub(super) fn dispatch_window_import(
                 let window = *current_gworld;
                 if window != PPC_MAIN_GWORLD {
                     if let Some(rect) = ppc_read_rect(memory, params.rect_ptr()) {
+                        toolbox_startup.recurring_update_poll.forget_window(window);
                         ppc_invalidate_window_local_rect(memory, window, rect);
                         ppc_enqueue_window_update_event(event_queue, window, tick_count, input);
                     }
@@ -1239,6 +1240,7 @@ pub(super) fn dispatch_window_import(
                 let window = *current_gworld;
                 if window != PPC_MAIN_GWORLD {
                     if let Some(rect) = ppc_read_rgn_bbox(memory, params.rgn_ptr()) {
+                        toolbox_startup.recurring_update_poll.forget_window(window);
                         ppc_invalidate_window_local_rect(memory, window, rect);
                         ppc_enqueue_window_update_event(event_queue, window, tick_count, input);
                     }
@@ -1253,6 +1255,7 @@ pub(super) fn dispatch_window_import(
                 let window = *current_gworld;
                 if window != PPC_MAIN_GWORLD {
                     if let Some(rect) = ppc_read_rect(memory, params.rect_ptr()) {
+                        toolbox_startup.recurring_update_poll.forget_window(window);
                         ppc_validate_window_local_rect(memory, window, rect);
                     }
                 }
@@ -1266,6 +1269,7 @@ pub(super) fn dispatch_window_import(
                 let window = *current_gworld;
                 if window != PPC_MAIN_GWORLD {
                     if let Some(rect) = ppc_read_rgn_bbox(memory, params.rgn_ptr()) {
+                        toolbox_startup.recurring_update_poll.forget_window(window);
                         ppc_validate_window_local_rect(memory, window, rect);
                     }
                 }
@@ -1286,6 +1290,7 @@ pub(super) fn dispatch_window_import(
                 crate::window_manager::evaluate_end_update_parameters(cpu.gpr[3])
             {
                 let window = params.window_ptr();
+                toolbox_startup.recurring_update_poll.forget_window(window);
                 let update_rgn = memory
                     .read_u32_be(window.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
                     .unwrap_or(0);
