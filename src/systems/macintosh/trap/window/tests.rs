@@ -11022,6 +11022,16 @@ fn make_structure_window(
 }
 
 #[test]
+fn main_document_window_area_spans_the_quickdraw_coordinate_range() {
+    let (mut disp, _cpu, mut bus) = setup();
+    let bounds = (-25_000, -25_000, 25_000, 25_000);
+    let large = make_structure_window(&mut bus, 8, true, bounds);
+    let small = make_structure_window(&mut bus, 8, true, (0, 0, 100, 100));
+    disp.window_list.replace(vec![small, large]);
+    assert_eq!(disp.main_document_window_structure_bounds(&bus), Some(bounds));
+}
+
+#[test]
 fn main_document_window_bounds_skip_dialogs_floating_and_hidden_windows() {
     let (mut disp, _cpu, mut bus) = setup();
     let document_bounds = (40, 144, 382, 656);

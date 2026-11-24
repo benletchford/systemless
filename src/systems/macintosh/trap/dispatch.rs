@@ -3224,8 +3224,8 @@ impl TrapDispatcher {
     ) -> Option<((i16, i16, i16, i16), Option<(i16, i16, i16, i16)>)> {
         let windows = self.visible_document_window_structure_bounds(bus);
         let area = |&(top, left, bottom, right): &(i16, i16, i16, i16)| {
-            (i32::from(bottom) - i32::from(top)).max(0)
-                * (i32::from(right) - i32::from(left)).max(0)
+            (i64::from(bottom) - i64::from(top)).max(0)
+                * (i64::from(right) - i64::from(left)).max(0)
         };
         // `max_by_key` keeps the last maximum, so walk back to front to
         // prefer the frontmost of equally large windows.
