@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.128.0](https://github.com/benletchford/systemless/compare/v0.127.5...v0.128.0) (2026-11-24)
+
+
+### Features
+
+* **desktop:** fit the host window to the game window ([9d7a1a2](https://github.com/benletchford/systemless/commit/9d7a1a2bd03258f93128b60a04d64cdb12619a37))
+
+
+### Bug Fixes
+
+* **ppc:** draw screen-backed basic GrafPorts at the screen depth ([#6725](https://github.com/benletchford/systemless/issues/6725)) ([a5d17ba](https://github.com/benletchford/systemless/commit/a5d17bacb188fb84908f0d4e2e792291b1078012))
+* **quickdraw:** preserve italic overhang in copy-mode text ([946ce77](https://github.com/benletchford/systemless/commit/946ce77d0c1c0c9fe08feabb2051b132db9468e9))
+
+
+### Performance Improvements
+
+* **ppc:** bound same-tick recurring update event polling ([b038d03](https://github.com/benletchford/systemless/commit/b038d033503664fac8ac8829346c8474fd06d6f4))
+* **quickdraw:** share bulk ColorTable CLUT decoding across 68K and PowerPC ([#6726](https://github.com/benletchford/systemless/issues/6726)) ([a934d2d](https://github.com/benletchford/systemless/commit/a934d2dd1ff788d0f1ca0eb2dbeb7a941fb28951))
+* **vfs:** track directory revisions for catalogue publication ([2d9b649](https://github.com/benletchford/systemless/commit/2d9b6499ca069d31b2a462bf0bdcaca4c2ea881a))
+
 ## [0.127.5](https://github.com/benletchford/systemless/compare/v0.127.4...v0.127.5) (2026-11-24)
 
 
