@@ -17,6 +17,7 @@ pub(super) struct RuntimeConfig {
     pub game_path: PathBuf,
     pub mounts: Vec<PathBuf>,
     pub settled_frame_presentation: bool,
+    pub fit_game_window: bool,
     pub arrows_as_numpad: bool,
     pub native_integrations: bool,
     pub addressing_24_bit: bool,
@@ -80,6 +81,7 @@ impl RuntimeOwner {
                 driver.gpu = config.gpu;
                 driver.mounts = config.mounts;
                 driver.settled_frame_presentation = config.settled_frame_presentation;
+                driver.fit_game_window = config.fit_game_window;
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                     || -> Result<(), String> {
                         #[cfg(target_os = "macos")]
@@ -306,6 +308,7 @@ mod tests {
             game_path: "owner-test".into(),
             mounts: Vec::new(),
             settled_frame_presentation: false,
+            fit_game_window: false,
             arrows_as_numpad: false,
             native_integrations: false,
             addressing_24_bit: false,

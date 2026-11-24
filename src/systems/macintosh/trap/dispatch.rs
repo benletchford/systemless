@@ -2326,6 +2326,10 @@ pub struct TrapDispatcher {
     pub(crate) external_host_overlay_rects: Vec<(i16, i16, i16, i16)>,
     /// Parsed dialog items keyed by dialog pointer, for GetDItem/ModalDialog
     pub dialog_items: FastHashMap<u32, Vec<DialogItem>>,
+    /// Desktop `--fit-game-window`: ShowWindow centres a window that would
+    /// stick out of the game's main window over that window, so it draws
+    /// over the game instead of widening the host view.
+    pub fit_game_window: bool,
     pub(crate) dialog_default_outlines: FastHashSet<u32>,
     /// Original rects for items hidden via HideDialogItem,
     /// keyed by (dialog_ptr, 1-based item_no). Restored by ShowDialogItem.
@@ -3176,6 +3180,75 @@ impl TrapDispatcher {
                         .then_some(self.window_bounds)
                 })
         })
+    }
+
+    /// Global structure bounds (top, left, bottom, right) of the visible
+    /// document windows, front to back, skipping dialogs, floating windows,
+    /// desk accessory windows, and hidden windows.
+    fn visible_document_window_structure_bounds(
+        &self,
+        bus: &MacMemoryBus,
+    ) -> Vec<(i16, i16, i16, i16)> {
+        const DIALOG_KIND: i16 = 2;
+        const FLOATING_WINDOW_CLASS: u32 = 5;
+        let ghost_window = bus.read_long(crate::memory::globals::addr::GHOST_WINDOW);
+        self.window_list
+            .windows()
+            .into_iter()
+            .filter(|&window| {
+                let kind =
+                    bus.read_word(window + crate::dialog_manager::DIALOG_WINDOW_KIND_OFFSET) as i16;
+                window != ghost_window
+                    && self.window_visible(bus, window)
+                    && kind >= 0
+                    && kind != DIALOG_KIND
+                    && !self.dialog_items.contains_key(&window)
+                    && !self.dialog_visible_snapshots.contains_key(&window)
+                    && self.window_list.window_class(window) != Some(FLOATING_WINDOW_CLASS)
+            })
+            .filter_map(|window| self.window_structure_rect(bus, window))
+            .collect()
+    }
+
+    /// Structure bounds of a windowed game's main window and of the document
+    /// windows in front of it, from one walk of the window list: the main
+    /// window is the largest visible document window (the frontmost among
+    /// equals), and the second value is the union of the visible document
+    /// windows in front of it. Games such as Fluffy's Adventure draw their
+    /// messages in smaller document windows rather than Dialog Manager
+    /// dialogs, so the main window stays the anchor while one of those is in
+    /// front of it.
+    pub fn game_document_window_structure_bounds(
+        &self,
+        bus: &MacMemoryBus,
+    ) -> Option<((i16, i16, i16, i16), Option<(i16, i16, i16, i16)>)> {
+        let windows = self.visible_document_window_structure_bounds(bus);
+        let area = |&(top, left, bottom, right): &(i16, i16, i16, i16)| {
+            (i64::from(bottom) - i64::from(top)).max(0)
+                * (i64::from(right) - i64::from(left)).max(0)
+        };
+        // `max_by_key` keeps the last maximum, so walk back to front to
+        // prefer the frontmost of equally large windows.
+        let (main_index, main) = windows
+            .iter()
+            .copied()
+            .enumerate()
+            .rev()
+            .max_by_key(|(_, bounds)| area(bounds))?;
+        let in_front = windows[..main_index]
+            .iter()
+            .copied()
+            .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)));
+        Some((main, in_front))
+    }
+
+    /// The main window of `game_document_window_structure_bounds`.
+    pub fn main_document_window_structure_bounds(
+        &self,
+        bus: &MacMemoryBus,
+    ) -> Option<(i16, i16, i16, i16)> {
+        self.game_document_window_structure_bounds(bus)
+            .map(|(main, _)| main)
     }
 
     /// Number of windows currently tracked by the Window Manager list.
@@ -4232,6 +4305,7 @@ impl TrapDispatcher {
             standard_file_get_tracking: None,
             external_host_overlay_rects: Vec::new(),
             dialog_items: HashMap::default(),
+            fit_game_window: false,
             dialog_default_outlines: HashSet::default(),
             hidden_dialog_item_rects: HashMap::default(),
             dialog_item_handles: HashMap::default(),

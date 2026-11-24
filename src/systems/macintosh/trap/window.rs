@@ -2342,6 +2342,48 @@ impl super::TrapDispatcher {
         true
     }
 
+    /// Desktop `--fit-game-window`: move a hidden window that ShowWindow or
+    /// ShowHide is about to reveal, and that would stick out of the game's
+    /// main window, to the centre of that window. Games often centre their
+    /// messages on the screen while their main window sits elsewhere, so the
+    /// message would otherwise widen the host view. A window larger than the
+    /// main window is left where it is; the view still widens to keep it
+    /// reachable.
+    fn centre_over_main_window_before_show<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+        window: u32,
+    ) {
+        if !self.fit_game_window || window == 0 || self.window_visible(bus, window) {
+            return;
+        }
+        let Some(main) = self.main_document_window_structure_bounds(bus) else {
+            return;
+        };
+        let Some(structure) = self.window_structure_rect(bus, window) else {
+            return;
+        };
+        // Class libraries such as THINK's show and hide a new window wholly
+        // off screen to set it up before moving it into view; leave that.
+        let (_, _, screen_width, screen_height, _) = self.screen_mode;
+        let (top, left, bottom, right) = structure;
+        if bottom <= 0 || right <= 0 || top >= screen_height as i16 || left >= screen_width as i16 {
+            return;
+        }
+        let Some((dv, dh)) = centring_offset(structure, main) else {
+            return;
+        };
+        let (top, left, _, _) = self.window_global_port_rect(bus, window);
+        let (Some(h_global), Some(v_global)) = (left.checked_add(dh), top.checked_add(dv)) else {
+            return;
+        };
+        eprintln!(
+            "[WINDOW] fit-game-window: centring window ${window:08X} {structure:?} over main window {main:?}"
+        );
+        self.move_window_to_global(bus, cpu, window, h_global, v_global, false);
+    }
+
     pub(crate) fn move_window_to_global<C: CpuOps>(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -4915,6 +4957,9 @@ impl super::TrapDispatcher {
                     // The Window Manager derives its content region from the
                     // current port rectangle when revealing it (IM:I I-284, I-289).
                     self.resync_window_geometry_from_port_rect(bus, the_window);
+                    if !was_visible {
+                        self.centre_over_main_window_before_show(bus, cpu, the_window);
+                    }
                     bus.write_byte(
                         the_window + Self::WINDOW_VISIBLE_OFFSET,
                         Self::WINDOW_VISIBLE_TRUE,
@@ -5927,6 +5972,9 @@ impl super::TrapDispatcher {
                 let mut arm_custom_wdef_draw = false;
                 if the_window != 0 {
                     let was_visible = self.window_visible(bus, the_window);
+                    if show_flag && !was_visible {
+                        self.centre_over_main_window_before_show(bus, cpu, the_window);
+                    }
                     if !show_flag {
                         self.dialog_visible_snapshots.remove(&the_window);
                     }
@@ -6813,3 +6861,42 @@ impl super::TrapDispatcher {
 
 #[cfg(test)]
 mod tests;
+
+/// Offset (vertical, horizontal) that centres `structure` over `main`, both
+/// (top, left, bottom, right), or `None` when `structure` already lies inside
+/// `main`, is too large to fit inside it, or the move does not fit in QuickDraw
+/// coordinates. Arithmetic is in `i32`, because a rectangle's width or height
+/// can exceed `i16::MAX`.
+pub(crate) fn centring_offset(
+    structure: (i16, i16, i16, i16),
+    main: (i16, i16, i16, i16),
+) -> Option<(i16, i16)> {
+    let widen = |(top, left, bottom, right): (i16, i16, i16, i16)| {
+        (
+            i32::from(top),
+            i32::from(left),
+            i32::from(bottom),
+            i32::from(right),
+        )
+    };
+    let (top, left, bottom, right) = widen(structure);
+    let (main_top, main_left, main_bottom, main_right) = widen(main);
+    if bottom <= top || right <= left || main_bottom <= main_top || main_right <= main_left {
+        return None;
+    }
+    let inside =
+        top >= main_top && left >= main_left && bottom <= main_bottom && right <= main_right;
+    let fits = bottom - top <= main_bottom - main_top && right - left <= main_right - main_left;
+    if inside || !fits {
+        return None;
+    }
+    let dv = (main_top + main_bottom) / 2 - (top + bottom) / 2;
+    let dh = (main_left + main_right) / 2 - (left + right) / 2;
+    // The moved rectangle must itself be a valid QuickDraw rectangle.
+    let in_range = |value: i32| i16::try_from(value).is_ok();
+    if !(in_range(top + dv) && in_range(bottom + dv) && in_range(left + dh) && in_range(right + dh))
+    {
+        return None;
+    }
+    Some((i16::try_from(dv).ok()?, i16::try_from(dh).ok()?))
+}

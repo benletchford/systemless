@@ -432,6 +432,13 @@ struct Cli {
     #[arg(long)]
     fullscreen: bool,
 
+    /// Show only the game's main window (title bar included), size the host
+    /// window to it, and keep its aspect ratio when the host window is
+    /// resized. For games that draw into an ordinary document window rather
+    /// than the whole screen. Dialogs temporarily widen the view. macOS only
+    #[arg(long)]
+    fit_game_window: bool,
+
     /// Legacy diagnostic input script timestamped in retired instructions.
     /// Not a matched-time workload: wait optimizations change when inputs land.
     #[arg(long, value_name = "FILE")]
@@ -1078,6 +1085,13 @@ struct App {
     /// gameplay crop.
     #[cfg(target_os = "macos")]
     window_sized_content_rect: Option<ContentRect>,
+    /// `--fit-game-window`: crop to the main document window's structure
+    /// region instead of learning or caching a gameplay crop.
+    #[cfg(target_os = "macos")]
+    fit_game_window: bool,
+    /// Owner frames in a row without a main window while a fit crop is set.
+    #[cfg(target_os = "macos")]
+    fit_anchor_missing_frames: u16,
     /// Native size and position to restore after a transient dialog closes.
     #[cfg(target_os = "macos")]
     transient_window_restore_geometry: Option<TransientWindowGeometry>,
@@ -1275,6 +1289,10 @@ impl App {
                 .map(|cache| (cache.screen_width, cache.screen_height, cache.pixel_size)),
             #[cfg(target_os = "macos")]
             window_sized_content_rect: cached_content.as_ref().map(|cache| cache.content),
+            #[cfg(target_os = "macos")]
+            fit_game_window: false,
+            #[cfg(target_os = "macos")]
+            fit_anchor_missing_frames: 0,
             #[cfg(target_os = "macos")]
             transient_window_restore_geometry: None,
             #[cfg(target_os = "macos")]
@@ -1542,7 +1560,11 @@ impl App {
                     width: sw,
                     height: sh,
                 }),
-                self.guest_state.dialog_bounds,
+                transient_presentation_bounds(
+                    self.fit_game_window,
+                    self.guest_state.dialog_bounds,
+                    self.guest_state.front_window_bounds,
+                ),
                 sw,
                 sh,
                 self.guest_state.hidden_menu_height,
@@ -1594,7 +1616,11 @@ impl App {
                     width: sw,
                     height: sh,
                 }),
-                self.guest_state.dialog_bounds,
+                transient_presentation_bounds(
+                    self.fit_game_window,
+                    self.guest_state.dialog_bounds,
+                    self.guest_state.front_window_bounds,
+                ),
                 sw,
                 sh,
                 self.guest_state.hidden_menu_height,
@@ -1718,6 +1744,19 @@ impl App {
         }
     }
 
+    /// Crop to the game's main window instead of a learned or cached crop.
+    #[cfg(target_os = "macos")]
+    fn enable_fit_game_window(&mut self) {
+        self.fit_game_window = true;
+        self.fit_anchor_missing_frames = 0;
+        if let Some(driver) = self.driver.as_mut() {
+            driver.fit_game_window = true;
+        }
+        self.content_rect = None;
+        self.content_rect_screen_mode = None;
+        self.window_sized_content_rect = None;
+    }
+
     fn render_frame(&mut self) {
         let _timing = FramePhaseTimer::new("render frame (main thread)");
         let render_start = std::time::Instant::now();
@@ -1807,7 +1846,64 @@ impl App {
             // A resize can present this packet repeatedly. Crop confirmation
             // counts completed owner frames, not host redraw callbacks.
             let key = (frame.generation, frame.sequence);
-            if self.content_rect_frame != Some(key) {
+            if self.fit_game_window {
+                // Follow the main window; a visible dialog widens the view
+                // below through `dialog_bounds` without moving this anchor.
+                // Count completed owner frames, not repeated presents.
+                let change = if self.content_rect_frame != Some(key) {
+                    self.content_rect_frame = Some(key);
+                    step_fit_game_window_crop(
+                        &mut self.content_rect,
+                        &mut self.fit_anchor_missing_frames,
+                        frame.crop.main_window_bounds,
+                        game_w,
+                        game_h,
+                        frame.crop.hidden_menu_height,
+                    )
+                } else {
+                    FitGameWindowChange::Unchanged
+                };
+                match change {
+                    FitGameWindowChange::Unchanged => {}
+                    FitGameWindowChange::Pan(presented) => {
+                        self.window_sized_content_rect = Some(presented);
+                    }
+                    FitGameWindowChange::Fit(presented) => {
+                        eprintln!(
+                            "[SYSTEMLESS] Game window: {}x{} at ({},{}) inside {}x{}",
+                            presented.width,
+                            presented.height,
+                            presented.left,
+                            presented.top,
+                            game_w,
+                            game_h
+                        );
+                        if let Some(window) = self.window.as_ref() {
+                            lock_macos_window_content_aspect(
+                                window,
+                                presented.width,
+                                presented.height,
+                            );
+                            if let Some(size) =
+                                fit_game_window_size(window, self.display_scale, presented)
+                            {
+                                let _ = window.request_inner_size(size);
+                            }
+                        }
+                        self.window_sized_content_rect = Some(presented);
+                    }
+                    FitGameWindowChange::Release(presented) => {
+                        eprintln!(
+                            "[SYSTEMLESS] Game window closed; showing the full {}x{} screen",
+                            game_w, game_h
+                        );
+                        if let Some(window) = self.window.as_ref() {
+                            clear_macos_window_content_aspect(window);
+                        }
+                        self.window_sized_content_rect = Some(presented);
+                    }
+                }
+            } else if self.content_rect_frame != Some(key) {
                 self.content_rect_frame = Some(key);
                 let screen_signature = (screen_mode.2, screen_mode.3, screen_mode.4);
                 if self.content_rect_screen_mode != Some(screen_signature) {
@@ -2031,7 +2127,11 @@ impl App {
             );
             let desired_content = presentation_content_rect(
                 stable_content,
-                frame.crop.dialog_bounds,
+                transient_presentation_bounds(
+                    self.fit_game_window,
+                    frame.crop.dialog_bounds,
+                    frame.crop.front_window_bounds,
+                ),
                 game_w,
                 game_h,
                 frame.crop.hidden_menu_height,
@@ -2747,6 +2847,188 @@ fn presentation_content_rect(
     }
 }
 
+/// Bounds that temporarily widen the presented crop: a visible dialog, and
+/// with `--fit-game-window` also smaller document windows in front of the
+/// game's main window, which some games use as dialogs.
+#[cfg(target_os = "macos")]
+fn transient_presentation_bounds(
+    fit_game_window: bool,
+    dialog_bounds: Option<(i16, i16, i16, i16)>,
+    front_window_bounds: Option<(i16, i16, i16, i16)>,
+) -> Option<(i16, i16, i16, i16)> {
+    match (
+        dialog_bounds,
+        front_window_bounds.filter(|_| fit_game_window),
+    ) {
+        (Some(a), Some(b)) => Some((a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Owner frames without a main window before `--fit-game-window` gives up
+/// the crop. Games often hide one window just before showing the next, so a
+/// single frame without one is not a closed game window.
+#[cfg(target_os = "macos")]
+const FIT_ANCHOR_LOSS_FRAMES: u16 = 3;
+
+/// What one owner frame changes for `--fit-game-window`; each variant carries
+/// the presented rectangle.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FitGameWindowChange {
+    Unchanged,
+    /// The main window moved; only the view pans.
+    Pan(ContentRect),
+    /// The main window appeared or changed size: size the host window to it
+    /// and lock its aspect ratio.
+    Fit(ContentRect),
+    /// The main window is gone: show the full guest screen and release the
+    /// aspect ratio.
+    Release(ContentRect),
+}
+
+/// Advance the `--fit-game-window` crop by one owner frame.
+#[cfg(target_os = "macos")]
+fn step_fit_game_window_crop(
+    content_rect: &mut Option<ContentRect>,
+    missing_frames: &mut u16,
+    main_window_bounds: Option<(i16, i16, i16, i16)>,
+    screen_width: u32,
+    screen_height: u32,
+    hidden_menu_height: u32,
+) -> FitGameWindowChange {
+    let presented = |rect| {
+        presentation_content_rect(rect, None, screen_width, screen_height, hidden_menu_height)
+    };
+    let Some(rect) = main_window_bounds
+        .and_then(|bounds| game_window_content_rect(bounds, screen_width, screen_height))
+    else {
+        if content_rect.is_none() {
+            return FitGameWindowChange::Unchanged;
+        }
+        *missing_frames = missing_frames.saturating_add(1);
+        if *missing_frames < FIT_ANCHOR_LOSS_FRAMES {
+            return FitGameWindowChange::Unchanged;
+        }
+        *missing_frames = 0;
+        *content_rect = None;
+        return FitGameWindowChange::Release(presented(ContentRect {
+            left: 0,
+            top: 0,
+            width: screen_width,
+            height: screen_height,
+        }));
+    };
+    *missing_frames = 0;
+    if *content_rect == Some(rect) {
+        return FitGameWindowChange::Unchanged;
+    }
+    let previous = content_rect.map(presented);
+    *content_rect = Some(rect);
+    let current = presented(rect);
+    // Moving the guest window only pans the view; resize the host window and
+    // change its aspect ratio only when the presented size changes, so a
+    // user-chosen size survives.
+    if previous.map(|previous| (previous.width, previous.height))
+        == Some((current.width, current.height))
+    {
+        FitGameWindowChange::Pan(current)
+    } else {
+        FitGameWindowChange::Fit(current)
+    }
+}
+
+/// Clip a window's global structure bounds (top, left, bottom, right) to the
+/// guest screen; the `--fit-game-window` crop.
+#[cfg(target_os = "macos")]
+fn game_window_content_rect(
+    bounds: (i16, i16, i16, i16),
+    screen_width: u32,
+    screen_height: u32,
+) -> Option<ContentRect> {
+    let (top, left, bottom, right) = bounds;
+    let clamp = |value: i16, limit: u32| i32::from(value).clamp(0, limit as i32) as u32;
+    let (left, right) = (clamp(left, screen_width), clamp(right, screen_width));
+    let (top, bottom) = (clamp(top, screen_height), clamp(bottom, screen_height));
+    (right > left && bottom > top).then(|| ContentRect {
+        left,
+        top,
+        width: right - left,
+        height: bottom - top,
+    })
+}
+
+/// Host window size for a new `--fit-game-window` crop: the explicit
+/// `--display-scale`, otherwise the automatic monitor-aware size. Fullscreen
+/// and zoomed windows keep their size and letterbox the crop.
+#[cfg(target_os = "macos")]
+fn fit_game_window_size(
+    window: &Window,
+    display_scale: Option<u32>,
+    content: ContentRect,
+) -> Option<winit::dpi::PhysicalSize<u32>> {
+    if window.fullscreen().is_some() || window.is_maximized() {
+        return None;
+    }
+    Some(match display_scale {
+        Some(scale) => guest_scaled_physical_size(content.width, content.height, scale),
+        None => automatic_window_size(
+            content.width,
+            content.height,
+            window_monitor_bounds(window).map(|(_, size)| size),
+            window.scale_factor(),
+        ),
+    })
+}
+
+/// Keep the host window's content at the game window's aspect ratio while
+/// the user resizes it (`NSWindow.contentAspectRatio`). Only
+/// `--fit-game-window` sets this.
+#[cfg(target_os = "macos")]
+fn lock_macos_window_content_aspect(window: &Window, width: u32, height: u32) {
+    if width == 0 || height == 0 {
+        return;
+    }
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+    // SAFETY: winit owns the NSView and its NSWindow for the duration of this
+    // call, which runs on AppKit's main thread. CGSize is ABI-compatible with
+    // NSSize on 64-bit macOS.
+    unsafe {
+        let view: &NSObject = handle.ns_view.cast().as_ref();
+        let native_window: *mut NSObject = msg_send![view, window];
+        if let Some(native_window) = native_window.as_ref() {
+            let ratio = objc2_foundation::CGSize::new(f64::from(width), f64::from(height));
+            let _: () = msg_send![native_window, setContentAspectRatio: ratio];
+        }
+    }
+}
+
+/// Release the aspect ratio set by `lock_macos_window_content_aspect`.
+/// AppKit clears an aspect ratio when resize increments are set again.
+#[cfg(target_os = "macos")]
+fn clear_macos_window_content_aspect(window: &Window) {
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+    // SAFETY: as in `lock_macos_window_content_aspect`.
+    unsafe {
+        let view: &NSObject = handle.ns_view.cast().as_ref();
+        let native_window: *mut NSObject = msg_send![view, window];
+        if let Some(native_window) = native_window.as_ref() {
+            let increments = objc2_foundation::CGSize::new(1.0, 1.0);
+            let _: () = msg_send![native_window, setContentResizeIncrements: increments];
+        }
+    }
+}
+
 /// Extend a stable gameplay crop just enough to include transient system UI.
 /// The learned/cached rectangle remains unchanged, so dismissing a dialog
 /// restores the normal viewport without relearning it or resizing the native
@@ -3101,7 +3383,11 @@ impl App {
                     width: sw,
                     height: sh,
                 }),
-                self.guest_state.dialog_bounds,
+                transient_presentation_bounds(
+                    self.fit_game_window,
+                    self.guest_state.dialog_bounds,
+                    self.guest_state.front_window_bounds,
+                ),
                 sw,
                 sh,
                 self.guest_state.hidden_menu_height,
@@ -3583,6 +3869,7 @@ fn run_gui(
     display_scale: Option<u32>,
     ui_theme: UiThemeId,
     fullscreen: bool,
+    fit_game_window: bool,
     debug_socket: Option<PathBuf>,
     use_wgpu: bool,
     use_software: bool,
@@ -3618,6 +3905,7 @@ fn run_gui(
         game_path: game_path.clone(),
         mounts,
         settled_frame_presentation,
+        fit_game_window,
         arrows_as_numpad,
         native_integrations,
         addressing_24_bit,
@@ -3640,6 +3928,14 @@ fn run_gui(
     app.use_wgpu = use_wgpu;
     app.use_software = use_software;
     app.gpu_fallback = gpu_fallback;
+    #[cfg(target_os = "macos")]
+    if fit_game_window {
+        app.enable_fit_game_window();
+    }
+    #[cfg(not(target_os = "macos"))]
+    if fit_game_window {
+        eprintln!("[SYSTEMLESS] --fit-game-window is only supported on macOS; ignoring it");
+    }
     app.wgpu_wake = Some(event_loop.create_proxy());
     app.configure_serial_driver(use_wgpu, &config.mounts, config.settled_frame_presentation);
     #[cfg(target_os = "windows")]
@@ -4211,6 +4507,7 @@ fn main() {
             cli.display_scale,
             cli.ui_theme,
             cli.fullscreen,
+            cli.fit_game_window,
             cli.debug_socket,
             use_wgpu,
             cli.renderer == renderer_selection::Renderer::Software,
@@ -6501,6 +6798,216 @@ mod tests {
             driver.capture_state(&mut app.guest_state, false);
             assert_eq!(app.guest_state.hidden_menu_height, 0);
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn fit_game_window_crop_is_the_structure_region_clipped_to_the_screen() {
+        // Fluffy's Adventure 1.2: a 512x342 noGrowDocProc window on 800x600.
+        assert_eq!(
+            game_window_content_rect((41, 143, 403, 657), 800, 600),
+            Some(ContentRect {
+                left: 143,
+                top: 41,
+                width: 514,
+                height: 362,
+            })
+        );
+        assert_eq!(
+            game_window_content_rect((-30, 700, 200, 900), 800, 600),
+            Some(ContentRect {
+                left: 700,
+                top: 0,
+                width: 100,
+                height: 200,
+            }),
+            "a window partly off screen is cropped to its visible part"
+        );
+        assert_eq!(game_window_content_rect((10, 810, 50, 900), 800, 600), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn fit_game_window_reaches_an_off_centre_dialog_and_restores_the_document_crop() {
+        let mut app = App::new_with_display_scale(
+            PathBuf::from("missing-archive"),
+            false,
+            false,
+            false,
+            Some(8),
+            None,
+            UiThemeId::ClassicSystem7,
+            false,
+            true,
+        );
+        app.enable_fit_game_window();
+        app.current_screen_width = 800;
+        app.current_screen_height = 600;
+        let document = game_window_content_rect((41, 143, 403, 657), 800, 600).unwrap();
+        app.content_rect = Some(document);
+        // Without a host window the mapping uses an 800x600 host view, a
+        // scaled view of the 514x362 document crop.
+        let (host_w, host_h) = (800, 600);
+
+        // An off-centre alert that extends past the document's right and
+        // bottom edges; its Ok button is its outermost control. Fluffy's
+        // Adventure shows the same kind of message in a document window in
+        // front of its main window, so check both sources.
+        let dialog = (300, 560, 430, 780);
+        let ok_button = (405, 760);
+        for game_drawn_message in [false, true] {
+            if game_drawn_message {
+                app.guest_state.front_window_bounds = Some(dialog);
+            } else {
+                app.guest_state.dialog_bounds = Some(dialog);
+            }
+            let widened = presentation_content_rect(
+                document,
+                transient_presentation_bounds(
+                    true,
+                    app.guest_state.dialog_bounds,
+                    app.guest_state.front_window_bounds,
+                ),
+                800,
+                600,
+                0,
+            );
+            assert_eq!(
+                widened,
+                ContentRect {
+                    left: 143,
+                    top: 41,
+                    width: 637,
+                    height: 389,
+                },
+                "the dialog widens the view without moving the document anchor"
+            );
+            let (px, py) =
+                mac_to_physical_in_viewport(ok_button.0, ok_button.1, widened, host_w, host_h)
+                    .expect("the Ok button is inside the widened view");
+            assert!(px < f64::from(host_w) && py < f64::from(host_h));
+            assert_eq!(
+                app.physical_to_mac(px, py),
+                ok_button,
+                "a click on the Ok button reaches it through the scaled view"
+            );
+
+            app.guest_state.dialog_bounds = None;
+            app.guest_state.front_window_bounds = None;
+            assert_eq!(app.content_rect, Some(document));
+            for (v, h) in [(41, 143), (222, 400), (402, 656)] {
+                let (px, py) = mac_to_physical_in_viewport(v, h, document, host_w, host_h).unwrap();
+                assert_eq!(
+                    app.physical_to_mac(px, py),
+                    (v, h),
+                    "input maps through the restored document crop"
+                );
+            }
+            let (px, py) =
+                mac_to_physical_in_viewport(ok_button.0, ok_button.1, widened, host_w, host_h)
+                    .unwrap();
+            assert_ne!(
+                app.physical_to_mac(px, py),
+                ok_button,
+                "the old Ok button position no longer maps to the dismissed dialog"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn fit_game_window_releases_the_crop_when_the_last_document_closes() {
+        let mut app = App::new_with_display_scale(
+            PathBuf::from("missing-archive"),
+            false,
+            false,
+            false,
+            Some(8),
+            None,
+            UiThemeId::ClassicSystem7,
+            false,
+            true,
+        );
+        app.enable_fit_game_window();
+        app.current_screen_width = 800;
+        app.current_screen_height = 600;
+        let bounds = (41, 143, 403, 657);
+        let document = game_window_content_rect(bounds, 800, 600).unwrap();
+        let step = |app: &mut App, bounds| {
+            step_fit_game_window_crop(
+                &mut app.content_rect,
+                &mut app.fit_anchor_missing_frames,
+                bounds,
+                800,
+                600,
+                0,
+            )
+        };
+        assert_eq!(
+            step(&mut app, Some(bounds)),
+            FitGameWindowChange::Fit(document)
+        );
+        assert_eq!(
+            step(&mut app, Some((51, 153, 413, 667))),
+            FitGameWindowChange::Pan(ContentRect {
+                left: 153,
+                top: 51,
+                ..document
+            }),
+            "moving the window pans without resizing the host window"
+        );
+        assert_eq!(
+            step(&mut app, Some(bounds)),
+            FitGameWindowChange::Pan(document)
+        );
+
+        // A guest point outside the document, as the full screen shows it.
+        let outside = (500, 700);
+        let full = ContentRect {
+            left: 0,
+            top: 0,
+            width: 800,
+            height: 600,
+        };
+        let (px, py) = mac_to_physical_in_viewport(outside.0, outside.1, full, 800, 600).unwrap();
+        assert_ne!(
+            app.physical_to_mac(px, py),
+            outside,
+            "while the document is the crop, that host point maps inside it"
+        );
+
+        // Hiding the last document: a brief gap between windows keeps the
+        // crop, a lasting one releases it.
+        for _ in 1..FIT_ANCHOR_LOSS_FRAMES {
+            assert_eq!(step(&mut app, None), FitGameWindowChange::Unchanged);
+            assert_eq!(app.content_rect, Some(document));
+        }
+        assert_eq!(step(&mut app, None), FitGameWindowChange::Release(full));
+        assert_eq!(app.content_rect, None);
+        assert_eq!(
+            app.physical_to_mac(px, py),
+            outside,
+            "after the release a click outside the old bounds reaches the guest point"
+        );
+        assert_eq!(step(&mut app, None), FitGameWindowChange::Unchanged);
+
+        // A new main window is fitted again, resizing the host window.
+        assert_eq!(
+            step(&mut app, Some(bounds)),
+            FitGameWindowChange::Fit(document)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn front_document_windows_widen_the_view_only_in_fit_game_window_mode() {
+        let message = Some((147, 231, 346, 569));
+        assert_eq!(transient_presentation_bounds(false, None, message), None);
+        assert_eq!(transient_presentation_bounds(true, None, message), message);
+        assert_eq!(
+            transient_presentation_bounds(true, Some((100, 300, 200, 400)), message),
+            Some((100, 231, 346, 569))
+        );
     }
 
     #[cfg(target_os = "macos")]

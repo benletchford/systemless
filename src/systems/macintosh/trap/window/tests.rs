@@ -10990,3 +10990,217 @@ fn dbox_chrome_frames_structure_region_after_app_grows_content_region() {
     );
     assert_ne!(bus.read_byte(pixel(150, 92)), sentinel);
 }
+
+fn make_structure_window(
+    bus: &mut crate::memory::MacMemoryBus,
+    window_kind: i16,
+    visible: bool,
+    bounds: (i16, i16, i16, i16),
+) -> u32 {
+    let window = bus.alloc(160);
+    bus.write_byte(
+        window + super::super::TrapDispatcher::WINDOW_VISIBLE_OFFSET,
+        if visible { 0xFF } else { 0 },
+    );
+    bus.write_word(
+        window + crate::dialog_manager::DIALOG_WINDOW_KIND_OFFSET,
+        window_kind as u16,
+    );
+    let region = bus.alloc(10);
+    bus.write_word(region, 10);
+    bus.write_word(region + 2, bounds.0 as u16);
+    bus.write_word(region + 4, bounds.1 as u16);
+    bus.write_word(region + 6, bounds.2 as u16);
+    bus.write_word(region + 8, bounds.3 as u16);
+    let handle = bus.alloc(4);
+    bus.write_long(handle, region);
+    bus.write_long(
+        window + super::super::TrapDispatcher::WINDOW_STRUC_RGN_OFFSET,
+        handle,
+    );
+    window
+}
+
+#[test]
+fn main_document_window_area_spans_the_quickdraw_coordinate_range() {
+    let (mut disp, _cpu, mut bus) = setup();
+    let bounds = (-25_000, -25_000, 25_000, 25_000);
+    let large = make_structure_window(&mut bus, 8, true, bounds);
+    let small = make_structure_window(&mut bus, 8, true, (0, 0, 100, 100));
+    disp.window_list.replace(vec![small, large]);
+    assert_eq!(disp.main_document_window_structure_bounds(&bus), Some(bounds));
+}
+
+#[test]
+fn main_document_window_bounds_skip_dialogs_floating_and_hidden_windows() {
+    let (mut disp, _cpu, mut bus) = setup();
+    let document_bounds = (40, 144, 382, 656);
+    let document = make_structure_window(&mut bus, 8, true, document_bounds);
+    let hidden_document = make_structure_window(&mut bus, 8, false, (0, 0, 100, 100));
+    let alert = make_structure_window(&mut bus, 2, true, (300, 500, 420, 760));
+    // WarCraft II changes a dialog's windowKind to userKind after
+    // GetNewDialog; the Dialog Manager still owns its items.
+    let user_kind_dialog = make_structure_window(&mut bus, 8, true, (60, 60, 160, 260));
+    disp.dialog_items.insert(user_kind_dialog, Vec::new());
+    let floating = make_structure_window(&mut bus, 8, true, (20, 0, 80, 60));
+    // Fluffy's Adventure shows its messages in a smaller document window.
+    let message_bounds = (147, 231, 346, 569);
+    let message = make_structure_window(&mut bus, 8, true, message_bounds);
+    disp.window_list.replace(vec![
+        message,
+        floating,
+        alert,
+        user_kind_dialog,
+        hidden_document,
+        document,
+    ]);
+    disp.window_list.set_window_class(
+        floating,
+        crate::window_manager::window_class_for_legacy_proc(1985),
+    );
+    disp.window_list.set_window_class(
+        document,
+        crate::window_manager::window_class_for_legacy_proc(4),
+    );
+
+    assert_eq!(
+        disp.main_document_window_structure_bounds(&bus),
+        Some(document_bounds),
+        "the largest document window stays the anchor while dialogs and a \
+         smaller message window are in front"
+    );
+    assert_eq!(
+        disp.game_document_window_structure_bounds(&bus)
+            .and_then(|(_, in_front)| in_front),
+        Some(message_bounds)
+    );
+
+    bus.write_byte(
+        message + super::super::TrapDispatcher::WINDOW_VISIBLE_OFFSET,
+        0,
+    );
+    assert_eq!(
+        disp.game_document_window_structure_bounds(&bus)
+            .and_then(|(_, in_front)| in_front),
+        None,
+        "closing the message window restores the document alone"
+    );
+
+    bus.write_byte(
+        document + super::super::TrapDispatcher::WINDOW_VISIBLE_OFFSET,
+        0,
+    );
+    assert_eq!(disp.main_document_window_structure_bounds(&bus), None);
+}
+
+#[test]
+fn centring_offset_moves_only_windows_that_stick_out_and_fit() {
+    use super::super::window::centring_offset;
+    let main = (23, 3, 424, 540);
+    // Fluffy's Adventure centres its Message window on the 800x600 screen.
+    assert_eq!(
+        centring_offset((147, 231, 346, 569), main),
+        Some((-23, -129))
+    );
+    assert_eq!(
+        centring_offset((100, 100, 200, 300), main),
+        None,
+        "already inside"
+    );
+    assert_eq!(
+        centring_offset((0, 0, 500, 300), main),
+        None,
+        "too tall to fit"
+    );
+    // A window wider than the main window, with a right edge at i16::MAX:
+    // i16 subtraction used to wrap and report a large bogus move.
+    assert_eq!(
+        centring_offset((40, -100, 220, 32767), (40, 40, 420, 600)),
+        None,
+        "an oversized window is left in place"
+    );
+    assert_eq!(
+        centring_offset(
+            (-32768, -32768, -32700, -32700),
+            (32000, 32000, 32767, 32767)
+        ),
+        None,
+        "a move beyond QuickDraw coordinates is refused"
+    );
+}
+
+fn show_message_window_over_main(fit_game_window: bool) -> (i16, i16, i16, i16) {
+    reveal_window_over_main(fit_game_window, false, (166, 232, 344, 567))
+}
+
+/// Reveal a hidden window with ShowWindow, or ShowHide as Fluffy's Adventure
+/// (THINK Class Library) does, in front of a main window at (23,3)-(424,540).
+fn reveal_window_over_main(
+    fit_game_window: bool,
+    use_show_hide: bool,
+    port: (i16, i16, i16, i16),
+) -> (i16, i16, i16, i16) {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.fit_game_window = fit_game_window;
+    let message = 0x200040u32;
+    setup_full_window_with_regions(&mut bus, message, port.0, port.1, port.2, port.3);
+    bus.write_byte(
+        message + super::super::TrapDispatcher::WINDOW_VISIBLE_OFFSET,
+        0,
+    );
+    let main = make_structure_window(&mut bus, 8, true, (23, 3, 424, 540));
+    disp.window_list.replace(vec![message, main]);
+    disp.front_window = message;
+
+    if use_show_hide {
+        let sp = TEST_SP - 6;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_byte(sp, 1);
+        bus.write_long(sp + 2, message);
+        assert!(dispatch(&mut disp, 0x108, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+    } else {
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, message);
+        assert!(dispatch(&mut disp, 0x115, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+    }
+    assert!(disp.window_visible(&bus, message));
+    disp.window_structure_rect(&bus, message).unwrap()
+}
+
+#[test]
+fn show_hide_centres_a_sticking_out_window_but_not_one_parked_off_screen() {
+    let (top, left, bottom, right) = reveal_window_over_main(true, true, (166, 232, 344, 567));
+    assert!(
+        top >= 23 && left >= 3 && bottom <= 424 && right <= 540,
+        "ShowHide must centre the window ({top},{left},{bottom},{right}) inside the main window"
+    );
+    // THINK first shows and hides a new window far off screen.
+    let parked = reveal_window_over_main(true, true, (1620, 1800, 1798, 2135));
+    assert!(
+        parked.0 > 600,
+        "an off-screen window stays off screen: {parked:?}"
+    );
+}
+
+#[test]
+fn show_window_centres_a_sticking_out_window_over_the_main_window_when_fitting() {
+    let (top, left, bottom, right) = show_message_window_over_main(true);
+    let (main_top, main_left, main_bottom, main_right) = (23, 3, 424, 540);
+    assert!(
+        top >= main_top && left >= main_left && bottom <= main_bottom && right <= main_right,
+        "the shown window ({top},{left},{bottom},{right}) must lie inside the main window"
+    );
+    assert!(((top + bottom) / 2 - (main_top + main_bottom) / 2).abs() <= 1);
+    assert!(((left + right) / 2 - (main_left + main_right) / 2).abs() <= 1);
+
+    let (_, _, _, unfitted_right) = show_message_window_over_main(false);
+    assert!(
+        unfitted_right > main_right,
+        "without --fit-game-window ShowWindow leaves the window where the game put it"
+    );
+}

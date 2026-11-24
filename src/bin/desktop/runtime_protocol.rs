@@ -31,6 +31,8 @@ pub(super) struct GuiState {
     #[cfg(target_os = "macos")]
     pub dialog_bounds: Option<(i16, i16, i16, i16)>,
     #[cfg(target_os = "macos")]
+    pub front_window_bounds: Option<(i16, i16, i16, i16)>,
+    #[cfg(target_os = "macos")]
     pub hidden_menu_height: u32,
     #[cfg(target_os = "macos")]
     pub identity: Option<Arc<systemless::systems::macintosh::game::ApplicationIdentity>>,

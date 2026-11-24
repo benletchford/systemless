@@ -59,6 +59,8 @@ pub(super) struct GuiDriver {
     pub(super) mounts: Vec<PathBuf>,
     /// `--present-settled-frames`: hold frames until the guest settles.
     pub(super) settled_frame_presentation: bool,
+    /// `--fit-game-window`: centre windows that stick out of the main window.
+    pub(super) fit_game_window: bool,
     arrows_as_numpad: bool,
     #[cfg(target_os = "macos")]
     native_integrations: bool,
@@ -121,6 +123,7 @@ impl GuiDriver {
             game_path,
             mounts: Vec::new(),
             settled_frame_presentation: false,
+            fit_game_window: false,
             arrows_as_numpad,
             addressing_24_bit,
             screen_depth,
@@ -174,6 +177,7 @@ impl GuiDriver {
         runner.prepare_text_presentation();
         runner.set_arrows_as_numpad(self.arrows_as_numpad);
         runner.set_settled_frame_presentation(self.settled_frame_presentation);
+        runner.dispatcher_mut().fit_game_window = self.fit_game_window;
 
         let ipt = configure_realtime_execution_rate(&mut runner);
         eprintln!("[SYSTEMLESS] Instructions per tick: {}", ipt);
@@ -265,6 +269,14 @@ impl GuiDriver {
             output.dialog_bounds = runner
                 .dispatcher()
                 .visible_dialog_structure_bounds(runner.bus());
+            output.front_window_bounds = if self.fit_game_window {
+                runner
+                    .dispatcher()
+                    .game_document_window_structure_bounds(runner.bus())
+                    .and_then(|(_, in_front)| in_front)
+            } else {
+                None
+            };
             output.hidden_menu_height = if self.native_integrations {
                 runner
                     .bus()
@@ -387,8 +399,13 @@ impl GuiDriver {
         {
             use systemless::systems::macintosh::memory::MemoryBus;
             let dispatcher = runner.dispatcher();
+            let game_windows = (capture_crop && self.fit_game_window)
+                .then(|| dispatcher.game_document_window_structure_bounds(runner.bus()))
+                .flatten();
             output.crop = super::frame_snapshot::CropObservations {
                 dialog_bounds: dispatcher.visible_dialog_structure_bounds(runner.bus()),
+                main_window_bounds: game_windows.map(|(main, _)| main),
+                front_window_bounds: game_windows.and_then(|(_, in_front)| in_front),
                 framed_rect: capture_crop
                     .then(|| dispatcher.framed_manual_cport_presentation_rect(runner.bus()))
                     .flatten(),
