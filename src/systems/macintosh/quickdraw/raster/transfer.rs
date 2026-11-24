@@ -38,6 +38,25 @@ impl<'s> PatCopyRows<'s> {
         bytes_per_pixel: usize,
     ) -> Self {
         let pattern = ink.pattern;
+        if bytes_per_pixel == 1 && (pattern == [0xFF; 8] || pattern == [0x00; 8]) {
+            let fill = if pattern[0] == 0xFF {
+                ink.fg as u8
+            } else {
+                ink.bg as u8
+            };
+            scratch.clear();
+            scratch.resize(width, fill);
+            return Self {
+                scratch,
+                aligned: [pattern[0]; 8],
+                slot: [0; 8],
+                built: 1,
+                row_len: width,
+                fg: ink.fg,
+                bg: ink.bg,
+                bytes_per_pixel,
+            };
+        }
         let rotate = (left - i32::from(ink.pat_origin.0)).rem_euclid(8) as u32;
         let mut aligned = [0u8; 8];
         let mut slot = [0u8; 8];
@@ -68,7 +87,7 @@ impl<'s> PatCopyRows<'s> {
     }
 
     /// The prepared bytes for pattern row `row` (0..8).
-    #[inline]
+    #[inline(always)]
     pub(crate) fn row(&mut self, row: usize) -> &[u8] {
         let slot = usize::from(self.slot[row]);
         let start = slot * self.row_len;
