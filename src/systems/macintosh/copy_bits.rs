@@ -336,6 +336,14 @@ pub(crate) trait CopyBitsMemory {
     ) -> bool {
         false
     }
+    fn copy_spans_with_detail(
+        &mut self,
+        _spans: &[(u32, u32, usize)],
+        _pixels: &[u8],
+        _palette: Option<&[u8; 256]>,
+    ) -> bool {
+        false
+    }
 }
 
 impl CopyBitsMemory for GuestAddressSpace {
@@ -385,6 +393,14 @@ impl CopyBitsMemory for GuestAddressSpace {
         palette: Option<&[u8; 256]>,
     ) -> bool {
         self.copy_detail_rows(rows, pixels, row_len, palette)
+    }
+    fn copy_spans_with_detail(
+        &mut self,
+        spans: &[(u32, u32, usize)],
+        pixels: &[u8],
+        palette: Option<&[u8; 256]>,
+    ) -> bool {
+        self.copy_detail_spans(spans, pixels, palette)
     }
     fn capture_copy_detail(
         &self,
@@ -491,6 +507,14 @@ impl CopyBitsMemory for MacMemoryBus {
         palette: Option<&[u8; 256]>,
     ) -> bool {
         self.copy_detail_rows(rows, pixels, row_len, palette)
+    }
+    fn copy_spans_with_detail(
+        &mut self,
+        spans: &[(u32, u32, usize)],
+        pixels: &[u8],
+        palette: Option<&[u8; 256]>,
+    ) -> bool {
+        self.copy_detail_spans(spans, pixels, palette)
     }
     fn capture_copy_detail(
         &self,
@@ -1631,6 +1655,172 @@ impl RowCopy<'_> {
             if memory.write_copy_row(*address, row).is_none() {
                 return RowCopyOutcome::WriteFailure { rows_written };
             }
+        }
+        RowCopyOutcome::Completed
+    }
+
+    /// Snapshot all region-clipped horizontal spans before writing so aliased
+    /// source/destination buffers observe pre-write pixels across every band.
+    /// `clip_rows[i]` lists sorted `[left, right)` endpoint pairs for scanline
+    /// `band_top + i`.
+    pub(crate) fn execute_clipped_rows(
+        self,
+        memory: &mut impl CopyBitsMemory,
+        band_top: i32,
+        clip_rows: &[Vec<i16>],
+    ) -> RowCopyOutcome {
+        let depth = self.source.depth;
+        let byte_aligned =
+            matches!(depth, 8 | 16 | 24 | 32) && (self.palette.is_none() || depth == 8);
+        if memory.gpu_blits_enabled()
+            || self.mode != 0
+            || depth != self.destination.depth
+            || !byte_aligned
+        {
+            return RowCopyOutcome::Declined;
+        }
+        let [st, sl, sb, sr] = self.source_rect;
+        let [dt, dl, db, dr] = self.destination_rect;
+        let Some(width) = sr.checked_sub(sl) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(height) = sb.checked_sub(st) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(destination_width) = dr.checked_sub(dl) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(destination_height) = db.checked_sub(dt) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        if width <= 0 || height <= 0 || destination_width <= 0 || destination_height <= 0 {
+            return RowCopyOutcome::NoOp;
+        }
+        if destination_width != width || destination_height != height {
+            return RowCopyOutcome::Declined;
+        }
+        let Some(x_delta) = sl.checked_sub(dl) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(y_delta) = st.checked_sub(dt) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let [sbt, sbl, sbb, sbr] = self.source.bounds;
+        let [dbt, dbl, dbb, dbr] = self.destination.bounds;
+        let [ct, cl, cb, cr] = self.clip;
+        let Some(source_top) = sbt.checked_sub(y_delta) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(source_left) = sbl.checked_sub(x_delta) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(source_bottom) = sbb.checked_sub(y_delta) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(source_right) = sbr.checked_sub(x_delta) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let top = dt.max(dbt).max(ct).max(source_top);
+        let left = dl.max(dbl).max(cl).max(source_left);
+        let bottom = db.min(dbb).min(cb).min(source_bottom);
+        let right = dr.min(dbr).min(cr).min(source_right);
+        if top >= bottom || left >= right {
+            return RowCopyOutcome::NoOp;
+        }
+        let lanes = (depth / 8) as usize;
+        let mut spans: Vec<(u32, u32, usize)> = Vec::new();
+        let mut span_rows: Vec<usize> = Vec::new();
+        let mut total_bytes = 0usize;
+
+        for (row_offset, y) in (top..bottom).enumerate() {
+            let Some(intervals) = y
+                .checked_sub(band_top)
+                .and_then(|offset| usize::try_from(offset).ok())
+                .and_then(|index| clip_rows.get(index))
+            else {
+                return RowCopyOutcome::Declined;
+            };
+            if intervals.len() % 2 != 0
+                || intervals.windows(2).any(|pair| pair[0] > pair[1])
+            {
+                return RowCopyOutcome::Declined;
+            }
+            let Some(source_y) = y.checked_add(y_delta) else {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            };
+            for pair in intervals.chunks_exact(2) {
+                let span_left = i32::from(pair[0]).max(left);
+                let span_right = i32::from(pair[1]).min(right);
+                if span_left >= span_right {
+                    continue;
+                }
+                let Some(span_len) = span_right
+                    .checked_sub(span_left)
+                    .and_then(|px| usize::try_from(px).ok())
+                    .and_then(|px| px.checked_mul(lanes))
+                else {
+                    return RowCopyOutcome::ReadOrGeometryFailure;
+                };
+                let Some(source_x) = span_left.checked_add(x_delta) else {
+                    return RowCopyOutcome::ReadOrGeometryFailure;
+                };
+                let Some(source_address) = self.source.row_address(source_x, source_y, span_len)
+                else {
+                    return RowCopyOutcome::ReadOrGeometryFailure;
+                };
+                let Some(destination_address) =
+                    self.destination.row_address(span_left, y, span_len)
+                else {
+                    return RowCopyOutcome::ReadOrGeometryFailure;
+                };
+                let Some(next_total) = total_bytes.checked_add(span_len) else {
+                    return RowCopyOutcome::ReadOrGeometryFailure;
+                };
+                total_bytes = next_total;
+                spans.push((source_address, destination_address, span_len));
+                span_rows.push(row_offset);
+            }
+        }
+        if spans.is_empty() {
+            return RowCopyOutcome::NoOp;
+        }
+        let mut pixels = Vec::new();
+        if pixels.try_reserve_exact(total_bytes).is_err() {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        }
+        pixels.resize(total_bytes, 0);
+        let mut offset = 0usize;
+        for &(source, _, len) in &spans {
+            if memory
+                .read_copy_row(source, &mut pixels[offset..offset + len])
+                .is_none()
+            {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            }
+            offset += len;
+        }
+        if matches!(depth, 8 | 16 | 32)
+            && memory.copy_spans_with_detail(&spans, &pixels, self.palette)
+        {
+            return RowCopyOutcome::Completed;
+        }
+        let mut pixels: SavedPixels = pixels.into();
+        if matches!(depth, 8 | 16 | 32) {
+            let mut detail_offset = 0usize;
+            for &(source, _, len) in &spans {
+                memory.capture_copy_detail(source, &mut pixels, detail_offset, len);
+                detail_offset += len;
+            }
+        }
+        let mut write_offset = 0usize;
+        for (&(_, destination, len), &rows_written) in spans.iter().zip(&span_rows) {
+            if memory
+                .write_copy_pixels(destination, &pixels, write_offset, len, self.palette)
+                .is_none()
+            {
+                return RowCopyOutcome::WriteFailure { rows_written };
+            }
+            write_offset += len;
         }
         RowCopyOutcome::Completed
     }
@@ -4154,5 +4344,139 @@ mod tests {
             let last = if classic { 8 } else { 0xaa };
             assert_eq!(committed, [1, 2, 3, 4, 5, 6, 0xaa, last]);
         }
+    }
+
+    #[test]
+    fn clipped_row_spans_match_per_pixel_oracle_across_holes_aliases_palettes_and_depths() {
+        let clip_rows = vec![
+            vec![0, 12],
+            vec![0, 3, 7, 12],
+            vec![2, 5, 8, 11],
+            vec![],
+            vec![1, 10],
+        ];
+        let palette: [u8; 256] = std::array::from_fn(|i| 255 - i as u8);
+        for depth in [8u32, 16, 32] {
+            let lanes = (depth / 8) as usize;
+            let row_bytes = (14 * lanes + 4) as u32;
+            let buf_len = row_bytes as usize * 8;
+            for use_palette in [false, true] {
+                if use_palette && depth != 8 {
+                    continue;
+                }
+                for alias_shift in [None, Some((1i32, 2i32))] {
+                    let initial: Vec<u8> =
+                        (0..buf_len).map(|i| ((i * 53 + 19) & 0xff) as u8).collect();
+                    let src_base = 0x10_0000u32;
+                    let dst_base = if alias_shift.is_some() {
+                        src_base
+                    } else {
+                        0x18_0000u32
+                    };
+                    let [dt, dl] = alias_shift.map_or([0, 0], |(dy, dx)| [dy, dx]);
+                    let src_rect = [0, 0, 5, 12];
+                    let dst_rect = [dt, dl, dt + 5, dl + 12];
+                    let band_top = dt;
+                    let shifted_rows: Vec<Vec<i16>> = clip_rows
+                        .iter()
+                        .map(|r| r.iter().map(|&x| x + dl as i16).collect())
+                        .collect();
+
+                    let mut expected = initial.clone();
+                    let mut dst_init: Vec<u8> =
+                        (0..buf_len).map(|i| ((i * 97 + 0x5a) & 0xff) as u8).collect();
+                    let oracle_buf = if alias_shift.is_some() {
+                        &mut expected
+                    } else {
+                        &mut dst_init
+                    };
+                    for row in 0..5i32 {
+                        let dy = dt + row;
+                        let intervals = &shifted_rows[row as usize];
+                        for col in 0..12i32 {
+                            let dx = dl + col;
+                            let covered = intervals
+                                .chunks_exact(2)
+                                .any(|p| dx >= i32::from(p[0]) && dx < i32::from(p[1]));
+                            if !covered {
+                                continue;
+                            }
+                            let s_off = row as usize * row_bytes as usize + col as usize * lanes;
+                            let d_off = dy as usize * row_bytes as usize + dx as usize * lanes;
+                            for b in 0..lanes {
+                                let mut byte = initial[s_off + b];
+                                if use_palette {
+                                    byte = palette[byte as usize];
+                                }
+                                oracle_buf[d_off + b] = byte;
+                            }
+                        }
+                    }
+                    let expected_bytes = oracle_buf.clone();
+
+                    let mut ppc = GuestAddressSpace::new();
+                    ppc.add_region(src_base, initial.clone());
+                    if alias_shift.is_none() {
+                        ppc.add_region(dst_base, (0..buf_len).map(|i| ((i * 97 + 0x5a) & 0xff) as u8).collect());
+                    }
+                    assert_eq!(
+                        RowCopy {
+                            mode: 0,
+                            source: pixmap(src_base, row_bytes, depth, [0, 0, 8, 14]),
+                            destination: pixmap(dst_base, row_bytes, depth, [0, 0, 8, 14]),
+                            source_rect: src_rect,
+                            destination_rect: dst_rect,
+                            clip: dst_rect,
+                            palette: use_palette.then_some(&palette),
+                        }
+                        .execute_clipped_rows(&mut ppc, band_top, &shifted_rows),
+                        RowCopyOutcome::Completed
+                    );
+                    let mut actual_ppc = vec![0u8; buf_len];
+                    ppc.read_bytes_into(dst_base, &mut actual_ppc).unwrap();
+                    assert_eq!(actual_ppc, expected_bytes, "ppc depth={depth} pal={use_palette} alias={alias_shift:?}");
+
+                    let mut bus = MacMemoryBus::new(0x40_0000);
+                    bus.write_bytes(src_base, &initial);
+                    if alias_shift.is_none() {
+                        let init_dst: Vec<u8> =
+                            (0..buf_len).map(|i| ((i * 97 + 0x5a) & 0xff) as u8).collect();
+                        bus.write_bytes(dst_base, &init_dst);
+                    }
+                    assert_eq!(
+                        RowCopy {
+                            mode: 0,
+                            source: pixmap(src_base, row_bytes, depth, [0, 0, 8, 14]),
+                            destination: pixmap(dst_base, row_bytes, depth, [0, 0, 8, 14]),
+                            source_rect: src_rect,
+                            destination_rect: dst_rect,
+                            clip: dst_rect,
+                            palette: use_palette.then_some(&palette),
+                        }
+                        .execute_clipped_rows(&mut bus, band_top, &shifted_rows),
+                        RowCopyOutcome::Completed
+                    );
+                    let mut actual_bus = vec![0u8; buf_len];
+                    bus.read_bytes_into(dst_base, &mut actual_bus);
+                    assert_eq!(actual_bus, expected_bytes, "m68k depth={depth} pal={use_palette} alias={alias_shift:?}");
+                }
+            }
+        }
+
+        // Empty covered intervals return NoOp without touching memory.
+        let mut ppc = GuestAddressSpace::new();
+        assert_eq!(
+            RowCopy {
+                mode: 0,
+                source: pixmap(SOURCE, 8, 8, [0, 0, 2, 8]),
+                destination: pixmap(DESTINATION, 8, 8, [0, 0, 2, 8]),
+                source_rect: [0, 2, 2, 6],
+                destination_rect: [0, 2, 2, 6],
+                clip: [0, 2, 2, 6],
+                palette: None,
+            }
+            .execute_clipped_rows(&mut ppc, 0, &[vec![0, 2, 6, 8], vec![]]),
+            RowCopyOutcome::NoOp
+        );
     }
 }

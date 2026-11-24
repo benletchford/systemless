@@ -1307,17 +1307,23 @@ pub(super) fn ppc_point_in_region(memory: &mut PpcSectionMem, rgn_handle: u32, v
     ppc_point_in_region_storage(&storage, v, h)
 }
 
-// Reuse decoded intervals across point queries in a QuickDraw region.
+// Reuse decoded intervals across point and row queries in a QuickDraw region.
 pub(super) struct PpcRegionRowCache<'a> {
     storage: Option<&'a [u8]>,
-    rows: HashMap<i16, Vec<i16>>,
+    bbox: Option<(i16, i16, i16, i16)>,
+    band_top: i16,
+    band_rows: Option<Vec<Vec<i16>>>,
+    fallback_rows: Vec<(i16, Vec<i16>)>,
 }
 
 impl<'a> PpcRegionRowCache<'a> {
     pub(super) fn new(storage: Option<&'a [u8]>) -> Self {
         Self {
             storage,
-            rows: HashMap::new(),
+            bbox: storage.and_then(ppc_region_storage_bbox),
+            band_top: 0,
+            band_rows: None,
+            fallback_rows: Vec::new(),
         }
     }
 
@@ -1326,22 +1332,30 @@ impl<'a> PpcRegionRowCache<'a> {
         let Some(storage) = storage.filter(|storage| storage.len() > 10) else {
             return cache;
         };
-        if i32::from(bottom) - i32::from(top) > 4096 || bottom <= top {
+        let Some((rgn_top, _, rgn_bottom, _)) = cache.bbox else {
+            return cache;
+        };
+        let band_top = top.max(rgn_top);
+        let band_bottom = bottom.min(rgn_bottom);
+        if i32::from(band_bottom) - i32::from(band_top) > 4096 || band_bottom <= band_top {
             return cache;
         }
-        if let Some(rows) = ppc_region_rows_for_band(storage, top, bottom) {
-            for (offset, row) in rows.into_iter().enumerate() {
-                cache.rows.insert((i32::from(top) + offset as i32) as i16, row);
-            }
+        if let Some(rows) = ppc_region_rows_for_band(storage, band_top, band_bottom) {
+            cache.band_top = band_top;
+            cache.band_rows = Some(rows);
         }
         cache
+    }
+
+    pub(super) fn band_rows(&self) -> Option<(i16, &[Vec<i16>])> {
+        self.band_rows.as_deref().map(|rows| (self.band_top, rows))
     }
 
     pub(super) fn contains(&mut self, v: i16, h: i16) -> bool {
         let Some(storage) = self.storage else {
             return true;
         };
-        let Some((top, left, bottom, right)) = ppc_region_storage_bbox(storage) else {
+        let Some((top, left, bottom, right)) = self.bbox else {
             return false;
         };
         if v < top || v >= bottom || h < left || h >= right {
@@ -1350,10 +1364,29 @@ impl<'a> PpcRegionRowCache<'a> {
         if storage.len() == 10 {
             return true;
         }
-        self.rows
-            .entry(v)
-            .or_insert_with(|| {
-                ppc_region_rows_for_band(storage, v, v.saturating_add(1))
+        if self.band_rows.is_none()
+            && self.fallback_rows.is_empty()
+            && i32::from(bottom) - i32::from(top) <= 4096
+        {
+            if let Some(rows) = ppc_region_rows_for_band(storage, top, bottom) {
+                self.band_top = top;
+                self.band_rows = Some(rows);
+            }
+        }
+        if let Some(rows) = self.band_rows.as_deref() {
+            if let Some(row) = usize::try_from(i32::from(v) - i32::from(self.band_top))
+                .ok()
+                .and_then(|offset| rows.get(offset))
+            {
+                return row
+                    .chunks_exact(2)
+                    .any(|interval| h >= interval[0] && h < interval[1]);
+            }
+        }
+        let row = match self.fallback_rows.binary_search_by_key(&v, |&(rv, _)| rv) {
+            Ok(index) => &self.fallback_rows[index].1,
+            Err(insert_at) => {
+                let decoded = ppc_region_rows_for_band(storage, v, v.saturating_add(1))
                     .and_then(|mut rows| {
                         if rows.is_empty() {
                             None
@@ -1361,9 +1394,12 @@ impl<'a> PpcRegionRowCache<'a> {
                             Some(rows.remove(0))
                         }
                     })
-                    .unwrap_or_default()
-            })
-            .chunks_exact(2)
+                    .unwrap_or_default();
+                self.fallback_rows.insert(insert_at, (v, decoded));
+                &self.fallback_rows[insert_at].1
+            }
+        };
+        row.chunks_exact(2)
             .any(|interval| h >= interval[0] && h < interval[1])
     }
 }
