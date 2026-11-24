@@ -2968,7 +2968,8 @@ pub(super) fn ppc_draw_control(
 /// (1994), pp. 7-5--7-6. The HLE controls bypass the recorded QuickDraw
 /// imports, so render the control, record the pixels it drew as one BitsRgn
 /// masked to the control's rectangle within the port's visible and clipping
-/// regions, and restore the pixels it covered. Returns false, drawing
+/// regions, and restore the pixels it covered. A port the picture cannot
+/// record from keeps the control drawn, as before. Returns false, drawing
 /// nothing, when no picture records the control; controls drawn by a guest
 /// CDEF record through QuickDraw itself.
 #[allow(clippy::too_many_arguments)]
@@ -3035,10 +3036,11 @@ pub(super) fn ppc_draw_control_into_open_picture(
     // The control draws only where the port's visRgn and clipRgn both admit
     // it. Record exactly those pixels, so replaying the picture leaves the
     // destination unchanged wherever the control drew nothing. A port
-    // without a readable region is not limited by it.
-    let mask = rect.and_then(|(top, left, bottom, right)| {
+    // without a readable region is not limited by it. The mask is None when
+    // the regions cannot be combined, and empty when nothing is visible.
+    let mask = rect.map_or(Some(vec![0, 10, 0, 0, 0, 0, 0, 0, 0, 0]), |rect| {
         let mut mask = vec![0, 10];
-        for word in [top, left, bottom, right] {
+        for word in [rect.0, rect.1, rect.2, rect.3] {
             mask.extend_from_slice(&word.to_be_bytes());
         }
         for offset in [PPC_CGRAF_PORT_VIS_RGN_OFFSET, PPC_CGRAF_PORT_CLIP_RGN_OFFSET] {
@@ -3051,7 +3053,7 @@ pub(super) fn ppc_draw_control_into_open_picture(
             mask = ppc_region_storage_boolean(&mask, &region, PpcRegionBooleanOp::Intersection)
                 .ok()?;
         }
-        Some(mask).filter(|mask| ppc_region_storage_bbox(mask).is_some())
+        Some(mask)
     });
     // The HLE control need not honor the port's regions, so save the whole
     // rectangle it may have drawn, not just the recorded pixels.
@@ -3075,9 +3077,9 @@ pub(super) fn ppc_draw_control_into_open_picture(
         current_resource_refnum,
         handle,
     );
-    if let (Some(mask), Some((_, _, _, commands))) = (mask, toolbox_startup.open_picture.as_mut()) {
-        if let Some(bounds) = ppc_region_storage_bbox(&mask) {
-            let _ = ppc_record_indexed_bits(
+    let recorded = match (mask, toolbox_startup.open_picture.as_mut()) {
+        (Some(mask), Some((_, _, _, commands))) => match ppc_region_storage_bbox(&mask) {
+            Some(bounds) => ppc_record_indexed_bits(
                 memory,
                 gworlds,
                 owner.wrapping_add(2),
@@ -3086,8 +3088,17 @@ pub(super) fn ppc_draw_control_into_open_picture(
                 0,
                 Some(&mask),
                 commands,
-            );
-        }
+            ),
+            // Nothing visible: the control records nothing.
+            None => true,
+        },
+        _ => false,
+    };
+    if !recorded {
+        // The recording supports only 8-bit indexed ports so far. Elsewhere,
+        // leave the control drawn in the port as DrawOneControl drew it
+        // before it recorded into pictures, rather than losing it entirely.
+        return true;
     }
     for (point, pixel) in points.into_iter().zip(covered) {
         if let Some(pixel) = pixel {

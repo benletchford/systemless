@@ -993,6 +993,106 @@ fn draw1control_records_only_the_scroll_bar_pixels_its_clip_region_admits() {
 }
 
 #[test]
+fn draw1control_still_draws_a_scroll_bar_it_cannot_record_from_a_true_color_port() {
+    // The picture recording of an HLE control captures 8-bit indexed pixels
+    // only. On a direct-color port, DrawOneControl must keep drawing the
+    // control as it did before it recorded into pictures, not lose it.
+    let depth = 16u32;
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"Draw1Control")).unwrap();
+    loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+    loaded.cpu.gpr[4] = depth;
+    loaded.cpu.gpr[5] = 1;
+    loaded.cpu.gpr[6] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let port = *loaded.current_gworld;
+    assert_eq!(port, PPC_MAIN_GWORLD);
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, port).unwrap();
+    let pixels = surface.front_buffer;
+    assert_eq!(pixels.depth, depth);
+    let mut last_mem_error = loaded.last_mem_error();
+    let bounds = (10, 20, 26, 120);
+    let frame = (0i16, 0i16, 40i16, 140i16);
+    let handle = with_test_controls!(
+        loaded,
+        |controls| ppc_new_control_record_values(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            controls,
+            port,
+            bounds,
+            b"",
+            true,
+            3,
+            0,
+            10,
+            16,
+            0,
+        )
+    );
+    assert_ne!(handle, 0);
+    // Compare the raw rows of direct pixels.
+    let read_frame = |loaded: &mut PpcLoadedApp| {
+        (frame.0..frame.2)
+            .flat_map(|v| {
+                let (x, y) = surface.local_point((i32::from(frame.1), i32::from(v)));
+                let row = pixels.base_addr + y as u32 * pixels.row_bytes + x as u32 * depth / 8;
+                let width = u32::from((frame.3 - frame.1) as u16) * depth / 8;
+                ppc_memory_read_bytes(&mut loaded.memory, row, width).unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    let paint_white = |loaded: &mut PpcLoadedApp| {
+        assert!(ppc_paint_rect_bounds(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            port,
+            frame,
+            PPC_RGB_WHITE,
+            None,
+        ));
+    };
+    let draw_control = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.gpr[3] = handle;
+        run_test_import(
+            loaded,
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl),
+        );
+    };
+
+    paint_white(&mut loaded);
+    let background = read_frame(&mut loaded);
+    draw_control(&mut loaded);
+    let expected = read_frame(&mut loaded);
+    assert_ne!(expected, background, "scroll bar did not draw at depth {depth}");
+
+    paint_white(&mut loaded);
+    let scratch = PPC_DATA_BASE + 0x1800;
+    loaded.memory.add_region(scratch, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, scratch, frame.0, frame.1, frame.2, frame.3).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::OpenPicture,
+        ),
+    );
+    assert_ne!(loaded.cpu.gpr[3], 0);
+    draw_control(&mut loaded);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::ClosePicture,
+        ),
+    );
+    assert_eq!(read_frame(&mut loaded), expected, "scroll bar lost at depth {depth}");
+}
+
+#[test]
 fn draw_controls_draws_newest_first_with_oldest_control_frontmost() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawControls")).unwrap();
     let mut last_mem_error = loaded.last_mem_error();
