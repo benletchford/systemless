@@ -1623,6 +1623,330 @@ impl RowCopy<'_> {
     }
 }
 
+/// Unscaled 1-bit-masked byte-aligned transfer (`CopyMask`), consumed before
+/// any guest callback can run.
+pub(crate) struct MaskedRowCopy<'a> {
+    pub(crate) source: BytePixmap,
+    pub(crate) mask: BytePixmap,
+    pub(crate) destination: BytePixmap,
+    pub(crate) source_rect: [i32; 4],
+    pub(crate) mask_rect: [i32; 4],
+    pub(crate) destination_rect: [i32; 4],
+    pub(crate) clip: [i32; 4],
+    pub(crate) palette: Option<&'a [u8; 256]>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use = "only Declined permits a caller to try another raster path"]
+pub(crate) enum MaskedRowCopyOutcome {
+    Completed { wrote_any: bool },
+    NoOp,
+    Declined,
+    WriteFailure { rows_completed: usize },
+}
+
+impl MaskedRowCopy<'_> {
+    /// Executes an unscaled 8- or 16-bit `CopyMask` gated by a 1-bit mask.
+    ///
+    /// Source and mask spans are verified in-bounds, disjoint from the
+    /// destination, and readable across every clipped row before any
+    /// destination byte is written, so a decline leaves destination memory
+    /// untouched for the caller's per-pixel fallback.
+    pub(crate) fn execute(self, memory: &mut impl CopyBitsMemory) -> MaskedRowCopyOutcome {
+        let depth = self.source.depth;
+        if self.mask.depth != 1
+            || self.destination.depth != depth
+            || !matches!(depth, 8 | 16)
+            || (depth != 8 && self.palette.is_some())
+        {
+            return MaskedRowCopyOutcome::Declined;
+        }
+        let [st, sl, sb, sr] = self.source_rect;
+        let [mt, ml, mb, mr] = self.mask_rect;
+        let [dt, dl, db, dr] = self.destination_rect;
+        let (Some(sw), Some(sh), Some(mw), Some(mh), Some(dw), Some(dh)) = (
+            sr.checked_sub(sl),
+            sb.checked_sub(st),
+            mr.checked_sub(ml),
+            mb.checked_sub(mt),
+            dr.checked_sub(dl),
+            db.checked_sub(dt),
+        ) else {
+            return MaskedRowCopyOutcome::Declined;
+        };
+        if sw <= 0 || sh <= 0 || mw <= 0 || mh <= 0 || dw <= 0 || dh <= 0 {
+            return MaskedRowCopyOutcome::NoOp;
+        }
+        if sw != dw || sh != dh || mw != dw || mh != dh {
+            return MaskedRowCopyOutcome::Declined;
+        }
+
+        let [dbt, dbl, dbb, dbr] = self.destination.bounds;
+        let [ct, cl, cb, cr] = self.clip;
+        let top = dt.max(dbt).max(ct);
+        let left = dl.max(dbl).max(cl);
+        let bottom = db.min(dbb).min(cb);
+        let right = dr.min(dbr).min(cr);
+        if top >= bottom || left >= right {
+            return MaskedRowCopyOutcome::NoOp;
+        }
+
+        let (Some(width_i32), Some(height_i32)) =
+            (right.checked_sub(left), bottom.checked_sub(top))
+        else {
+            return MaskedRowCopyOutcome::Declined;
+        };
+        let (Ok(width), Ok(height)) = (usize::try_from(width_i32), usize::try_from(height_i32))
+        else {
+            return MaskedRowCopyOutcome::Declined;
+        };
+        let lanes = (depth / 8) as usize;
+        let Some(row_len) = width.checked_mul(lanes) else {
+            return MaskedRowCopyOutcome::Declined;
+        };
+        let (Some(dx_off), Some(dy_off)) = (left.checked_sub(dl), top.checked_sub(dt)) else {
+            return MaskedRowCopyOutcome::Declined;
+        };
+        let (Some(src_top), Some(src_left), Some(mask_top), Some(mask_left)) = (
+            st.checked_add(dy_off),
+            sl.checked_add(dx_off),
+            mt.checked_add(dy_off),
+            ml.checked_add(dx_off),
+        ) else {
+            return MaskedRowCopyOutcome::Declined;
+        };
+        let (Some(src_bottom), Some(src_right), Some(mask_bottom), Some(mask_right)) = (
+            src_top.checked_add(height_i32),
+            src_left.checked_add(width_i32),
+            mask_top.checked_add(height_i32),
+            mask_left.checked_add(width_i32),
+        ) else {
+            return MaskedRowCopyOutcome::Declined;
+        };
+
+        let [sbt, sbl, sbb, sbr] = self.source.bounds;
+        let [mbt, mbl, mbb, mbr] = self.mask.bounds;
+        if src_top < sbt
+            || src_left < sbl
+            || src_bottom > sbb
+            || src_right > sbr
+            || mask_top < mbt
+            || mask_left < mbl
+            || mask_bottom > mbb
+            || mask_right > mbr
+        {
+            return MaskedRowCopyOutcome::Declined;
+        }
+
+        let src_row0 = (src_top - sbt) as u32;
+        let src_col_bytes = match u32::try_from(src_left - sbl)
+            .ok()
+            .and_then(|col| col.checked_mul(lanes as u32))
+        {
+            Some(bytes) => bytes,
+            None => return MaskedRowCopyOutcome::Declined,
+        };
+        let mask_row0 = (mask_top - mbt) as u32;
+        let mask_col_bits = (mask_left - mbl) as u32;
+        let mask_first_byte = mask_col_bits / 8;
+        let mask_first_bit = (mask_col_bits % 8) as usize;
+        let Some(mask_row_len) = mask_first_bit
+            .checked_add(width)
+            .map(|bits| bits.div_ceil(8))
+        else {
+            return MaskedRowCopyOutcome::Declined;
+        };
+        let dst_row0 = (top - dbt) as u32;
+        let dst_col_bytes = match u32::try_from(left - dbl)
+            .ok()
+            .and_then(|col| col.checked_mul(lanes as u32))
+        {
+            Some(bytes) => bytes,
+            None => return MaskedRowCopyOutcome::Declined,
+        };
+        let (Ok(row_len_u32), Ok(mask_len_u32), Ok(rows_u32)) = (
+            u32::try_from(row_len),
+            u32::try_from(mask_row_len),
+            u32::try_from(height),
+        ) else {
+            return MaskedRowCopyOutcome::Declined;
+        };
+
+        let accessed_span = |base: u32,
+                             row_bytes: u32,
+                             first_row: u32,
+                             first_col: u32,
+                             rows: u32,
+                             bytes: u32|
+         -> Option<(u64, u64)> {
+            if rows == 0 || bytes == 0 || first_col.checked_add(bytes)? > row_bytes {
+                return None;
+            }
+            let start =
+                u64::from(base) + u64::from(first_row) * u64::from(row_bytes) + u64::from(first_col);
+            let end = u64::from(base)
+                + u64::from(first_row.checked_add(rows - 1)?) * u64::from(row_bytes)
+                + u64::from(first_col)
+                + u64::from(bytes);
+            (end <= 1u64 << 32).then_some((start, end))
+        };
+        let (Some(src_span), Some(mask_span), Some(dst_span)) = (
+            accessed_span(
+                self.source.base,
+                self.source.row_bytes,
+                src_row0,
+                src_col_bytes,
+                rows_u32,
+                row_len_u32,
+            ),
+            accessed_span(
+                self.mask.base,
+                self.mask.row_bytes,
+                mask_row0,
+                mask_first_byte,
+                rows_u32,
+                mask_len_u32,
+            ),
+            accessed_span(
+                self.destination.base,
+                self.destination.row_bytes,
+                dst_row0,
+                dst_col_bytes,
+                rows_u32,
+                row_len_u32,
+            ),
+        ) else {
+            return MaskedRowCopyOutcome::Declined;
+        };
+        let disjoint = |a: (u64, u64), b: (u64, u64)| a.1 <= b.0 || b.1 <= a.0;
+        if !disjoint(src_span, dst_span) || !disjoint(mask_span, dst_span) {
+            return MaskedRowCopyOutcome::Declined;
+        }
+
+        let (Some(total_src_bytes), Some(total_mask_bytes)) =
+            (height.checked_mul(row_len), height.checked_mul(mask_row_len))
+        else {
+            return MaskedRowCopyOutcome::Declined;
+        };
+        if total_src_bytes > 4_194_304 || total_mask_bytes > 524_288 {
+            return MaskedRowCopyOutcome::Declined;
+        }
+
+        const INLINE_SRC_CAP: usize = 4096;
+        const INLINE_MASK_CAP: usize = 512;
+        let mut inline_src = [0u8; INLINE_SRC_CAP];
+        let mut heap_src = Vec::new();
+        let src_buf: &mut [u8] = if total_src_bytes <= INLINE_SRC_CAP {
+            &mut inline_src[..total_src_bytes]
+        } else {
+            if heap_src.try_reserve_exact(total_src_bytes).is_err() {
+                return MaskedRowCopyOutcome::Declined;
+            }
+            heap_src.resize(total_src_bytes, 0);
+            &mut heap_src
+        };
+
+        let mut inline_mask = [0u8; INLINE_MASK_CAP];
+        let mut heap_mask = Vec::new();
+        let mask_buf: &mut [u8] = if total_mask_bytes <= INLINE_MASK_CAP {
+            &mut inline_mask[..total_mask_bytes]
+        } else {
+            if heap_mask.try_reserve_exact(total_mask_bytes).is_err() {
+                return MaskedRowCopyOutcome::Declined;
+            }
+            heap_mask.resize(total_mask_bytes, 0);
+            &mut heap_mask
+        };
+
+        let src_row0_addr = src_span.0 as u32;
+        let mask_row0_addr = mask_span.0 as u32;
+        let dst_row0_addr = dst_span.0 as u32;
+        for row in 0..height {
+            let r = row as u32;
+            let src_addr = src_row0_addr + r * self.source.row_bytes;
+            let mask_addr = mask_row0_addr + r * self.mask.row_bytes;
+            if memory
+                .read_copy_row(src_addr, &mut src_buf[row * row_len..(row + 1) * row_len])
+                .is_none()
+                || memory
+                    .read_copy_row(
+                        mask_addr,
+                        &mut mask_buf[row * mask_row_len..(row + 1) * mask_row_len],
+                    )
+                    .is_none()
+            {
+                return MaskedRowCopyOutcome::Declined;
+            }
+        }
+
+        let mut wrote_any = false;
+        for row in 0..height {
+            let source_row = &mut src_buf[row * row_len..(row + 1) * row_len];
+            let mask_row = &mask_buf[row * mask_row_len..(row + 1) * mask_row_len];
+            let dst_row_base = dst_row0_addr + (row as u32) * self.destination.row_bytes;
+            let opaque = |column: usize| {
+                let bit = mask_first_bit + column;
+                mask_row[bit / 8] & (0x80 >> (bit & 7)) != 0
+            };
+            let mut column = 0usize;
+            while column < width {
+                while column + 8 <= width
+                    && ((mask_first_bit + column) & 7) == 0
+                    && mask_row[(mask_first_bit + column) / 8] == 0
+                {
+                    column += 8;
+                }
+                if column >= width {
+                    break;
+                }
+                if !opaque(column) {
+                    column += 1;
+                    continue;
+                }
+                let start = column;
+                column += 1;
+                while column + 8 <= width
+                    && ((mask_first_bit + column) & 7) == 0
+                    && mask_row[(mask_first_bit + column) / 8] == 0xff
+                {
+                    column += 8;
+                }
+                while column < width && opaque(column) {
+                    column += 1;
+                }
+
+                let byte_start = start * lanes;
+                let byte_end = column * lanes;
+                if let Some(palette) = self.palette {
+                    for pixel in &mut source_row[byte_start..byte_end] {
+                        *pixel = palette[*pixel as usize];
+                    }
+                }
+                wrote_any = true;
+                let dst_addr = dst_row_base + byte_start as u32;
+                if memory
+                    .write_copy_row(dst_addr, &source_row[byte_start..byte_end])
+                    .is_none()
+                {
+                    for px in start..column {
+                        let px_start = px * lanes;
+                        let px_addr = dst_row_base + px_start as u32;
+                        if memory
+                            .write_copy_row(px_addr, &source_row[px_start..px_start + lanes])
+                            .is_none()
+                        {
+                            return MaskedRowCopyOutcome::WriteFailure {
+                                rows_completed: row,
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        MaskedRowCopyOutcome::Completed { wrote_any }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3588,6 +3912,229 @@ mod tests {
             let mut actual = [0; 8];
             memory.read_bytes_into(DESTINATION, &mut actual).unwrap();
             assert_eq!(actual, [7, 7, 7, 7, 0xAA, 0xAA, 0xAA, 0xAA]);
+        }
+    }
+
+    fn run_masked(
+        memory: &mut GuestAddressSpace,
+        classic: bool,
+        copy: MaskedRowCopy<'_>,
+    ) -> MaskedRowCopyOutcome {
+        if classic {
+            let mut bus = MacMemoryBus::new(0x10000);
+            bus.set_addressing_32_bit(true);
+            bus.attach_guest_address_space(memory.shared_view());
+            copy.execute(&mut bus)
+        } else {
+            copy.execute(memory)
+        }
+    }
+
+    #[test]
+    fn masked_row_copy_matches_per_pixel_oracle_across_bit_phases_palettes_and_depths() {
+        const MASK: u32 = 0x0300_0000;
+        let palette = std::array::from_fn(|i| (255 - i) as u8);
+        for classic in [false, true] {
+            for depth in [8u32, 16] {
+                for mapped in [false, true] {
+                    if mapped && depth != 8 {
+                        continue;
+                    }
+                    for mask_left_bit in [0i32, 1, 3, 7, 8, 11] {
+                        let lanes = (depth / 8) as usize;
+                        let width = 26i32;
+                        let height = 4i32;
+                        let src_stride = (width as usize + 5) * lanes;
+                        let dst_stride = (width as usize + 7) * lanes;
+                        let mask_stride = 8usize;
+
+                        let src_init: Vec<u8> = (0..src_stride * (height as usize + 3))
+                            .map(|i| (i * 53 + 17) as u8)
+                            .collect();
+                        let dst_init: Vec<u8> = (0..dst_stride * (height as usize + 3))
+                            .map(|i| (i * 29 + 0x91) as u8)
+                            .collect();
+                        // Exercise all-zero bytes, all-one bytes, and mixed bit runs.
+                        let mask_init: Vec<u8> = vec![
+                            0x00, 0xff, 0b1011_0100, 0x00, 0xff, 0xaa, 0x55, 0x00,
+                            0xff, 0x00, 0xff, 0b0110_1001, 0x00, 0x0f, 0xf0, 0x00,
+                            0b1000_0001, 0x00, 0x00, 0xff, 0xff, 0b1100_0011, 0x00, 0x00,
+                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                            0xff, 0xaa, 0x00, 0xff, 0x55, 0x00, 0xff, 0x80,
+                            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
+                        ];
+
+                        let mut memory = GuestAddressSpace::new();
+                        memory.add_region(SOURCE, src_init.clone());
+                        memory.add_region(MASK, mask_init.clone());
+                        memory.add_region(DESTINATION, dst_init.clone());
+
+                        let src_bounds = [-2, -3, height + 1, width + 2];
+                        let mask_bounds = [-1, -4, height + 2, 60];
+                        let dst_bounds = [0, 0, height + 2, width + 4];
+                        let src_rect = [-1, -2, height - 1, width - 2];
+                        let mask_rect = [0, mask_left_bit - 4, height, mask_left_bit - 4 + width];
+                        let dst_rect = [1, 2, height + 1, width + 2];
+                        let clip = [1, 3, height, width + 1];
+
+                        let outcome = run_masked(
+                            &mut memory,
+                            classic,
+                            MaskedRowCopy {
+                                source: pixmap(SOURCE, src_stride as u32, depth, src_bounds),
+                                mask: pixmap(MASK, mask_stride as u32, 1, mask_bounds),
+                                destination: pixmap(
+                                    DESTINATION,
+                                    dst_stride as u32,
+                                    depth,
+                                    dst_bounds,
+                                ),
+                                source_rect: src_rect,
+                                mask_rect,
+                                destination_rect: dst_rect,
+                                clip,
+                                palette: mapped.then_some(&palette),
+                            },
+                        );
+                        assert_eq!(outcome, MaskedRowCopyOutcome::Completed { wrote_any: true });
+
+                        let mut expected = dst_init.clone();
+                        for dy in clip[0]..clip[2] {
+                            let sy = src_rect[0] + (dy - dst_rect[0]);
+                            let my = mask_rect[0] + (dy - dst_rect[0]);
+                            for dx in clip[1]..clip[3] {
+                                let sx = src_rect[1] + (dx - dst_rect[1]);
+                                let mx = mask_rect[1] + (dx - dst_rect[1]);
+                                let mbit = (mx - mask_bounds[1]) as usize;
+                                let mbyte = (my - mask_bounds[0]) as usize * mask_stride + mbit / 8;
+                                if mask_init[mbyte] & (0x80 >> (mbit & 7)) == 0 {
+                                    continue;
+                                }
+                                let s_off = (sy - src_bounds[0]) as usize * src_stride
+                                    + (sx - src_bounds[1]) as usize * lanes;
+                                let d_off = (dy - dst_bounds[0]) as usize * dst_stride
+                                    + (dx - dst_bounds[1]) as usize * lanes;
+                                for lane in 0..lanes {
+                                    let mut b = src_init[s_off + lane];
+                                    if mapped {
+                                        b = palette[b as usize];
+                                    }
+                                    expected[d_off + lane] = b;
+                                }
+                            }
+                        }
+
+                        let mut actual = vec![0; dst_init.len()];
+                        memory.read_bytes_into(DESTINATION, &mut actual).unwrap();
+                        assert_eq!(
+                            actual, expected,
+                            "classic={classic} depth={depth} mapped={mapped} bit={mask_left_bit}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn masked_row_copy_handles_empty_masks_declines_aliases_and_commits_partial_readonly_runs() {
+        const MASK: u32 = 0x0300_0000;
+        for classic in [false, true] {
+            let mut memory = GuestAddressSpace::new();
+            memory.add_region(SOURCE, vec![9; 16]);
+            memory.add_region(MASK, vec![0; 8]);
+            memory.add_region(DESTINATION, vec![0x5a; 16]);
+            assert_eq!(
+                run_masked(
+                    &mut memory,
+                    classic,
+                    MaskedRowCopy {
+                        source: pixmap(SOURCE, 4, 8, [0, 0, 4, 4]),
+                        mask: pixmap(MASK, 2, 1, [0, 0, 4, 4]),
+                        destination: pixmap(DESTINATION, 4, 8, [0, 0, 4, 4]),
+                        source_rect: [0, 0, 4, 4],
+                        mask_rect: [0, 0, 4, 4],
+                        destination_rect: [0, 0, 4, 4],
+                        clip: [0, 0, 4, 4],
+                        palette: None,
+                    },
+                ),
+                MaskedRowCopyOutcome::Completed { wrote_any: false }
+            );
+
+            // Aliasing source/destination or mask/destination declines without writing.
+            for (src_base, mask_base) in [(DESTINATION, MASK), (SOURCE, DESTINATION)] {
+                assert_eq!(
+                    run_masked(
+                        &mut memory,
+                        classic,
+                        MaskedRowCopy {
+                            source: pixmap(src_base, 4, 8, [0, 0, 4, 4]),
+                            mask: pixmap(mask_base, 2, 1, [0, 0, 4, 4]),
+                            destination: pixmap(DESTINATION, 4, 8, [0, 0, 4, 4]),
+                            source_rect: [0, 0, 4, 4],
+                            mask_rect: [0, 0, 4, 4],
+                            destination_rect: [0, 0, 4, 4],
+                            clip: [0, 0, 4, 4],
+                            palette: None,
+                        },
+                    ),
+                    MaskedRowCopyOutcome::Declined
+                );
+            }
+
+            // Unmapped second source row declines before touching row 0.
+            let mut partial = GuestAddressSpace::new();
+            partial.add_region(SOURCE, vec![7; 4]);
+            partial.add_region(MASK, vec![0xff; 4]);
+            partial.add_region(DESTINATION, vec![0xaa; 8]);
+            assert_eq!(
+                run_masked(
+                    &mut partial,
+                    classic,
+                    MaskedRowCopy {
+                        source: pixmap(SOURCE, 4, 8, [0, 0, 2, 4]),
+                        mask: pixmap(MASK, 2, 1, [0, 0, 2, 4]),
+                        destination: pixmap(DESTINATION, 4, 8, [0, 0, 2, 4]),
+                        source_rect: [0, 0, 2, 4],
+                        mask_rect: [0, 0, 2, 4],
+                        destination_rect: [0, 0, 2, 4],
+                        clip: [0, 0, 2, 4],
+                        palette: None,
+                    },
+                ),
+                MaskedRowCopyOutcome::Declined
+            );
+            let mut untouched = [0; 8];
+            partial.read_bytes_into(DESTINATION, &mut untouched).unwrap();
+            assert_eq!(untouched, [0xaa; 8]);
+
+            // Read-only byte mid-run on row 1 commits row 0 and the writable prefix of row 1.
+            let mut ro = GuestAddressSpace::new();
+            ro.add_region(SOURCE, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+            ro.add_region(MASK, vec![0xf0, 0xf0]);
+            ro.add_region(DESTINATION, vec![0xaa; 8]);
+            ro.add_readonly_region(DESTINATION + 6, vec![0xaa]);
+            assert_eq!(
+                run_masked(
+                    &mut ro,
+                    classic,
+                    MaskedRowCopy {
+                        source: pixmap(SOURCE, 4, 8, [0, 0, 2, 4]),
+                        mask: pixmap(MASK, 1, 1, [0, 0, 2, 4]),
+                        destination: pixmap(DESTINATION, 4, 8, [0, 0, 2, 4]),
+                        source_rect: [0, 0, 2, 4],
+                        mask_rect: [0, 0, 2, 4],
+                        destination_rect: [0, 0, 2, 4],
+                        clip: [0, 0, 2, 4],
+                        palette: None,
+                    },
+                ),
+                MaskedRowCopyOutcome::WriteFailure { rows_completed: 1 }
+            );
+            let mut committed = [0; 8];
+            ro.read_bytes_into(DESTINATION, &mut committed).unwrap();
+            assert_eq!(committed, [1, 2, 3, 4, 5, 6, 0xaa, 0xaa]);
         }
     }
 }

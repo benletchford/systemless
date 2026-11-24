@@ -14674,166 +14674,40 @@ impl super::TrapDispatcher {
                 let no_mask_scaling =
                     mask_w == dst_w && mask_h == dst_h && mask_w > 0 && mask_h > 0;
 
-                // The overwhelmingly common indexed CopyMask shape is an
-                // unscaled 8-bit sprite gated by a 1-bit mask. The generic
-                // loop below deliberately supports every admitted depth and
-                // scaling combination, but pays for two bounds/depth
-                // dispatches per destination pixel through
-                // `read_bitmap_pixel`. Prove that the clipped source and mask
-                // spans are wholly in bounds, then fetch each span once per
-                // row and store each opaque run as one span. Span stores fall
-                // back to byte stores while framebuffer tracing or watchpoints
-                // are active; palette translation is unchanged.
-                let clipped_width = i32::from(clip_r) - i32::from(clip_l);
-                let clipped_height = i32::from(clip_b) - i32::from(clip_t);
-                let src_clip_top = i32::from(src_top) + (i32::from(clip_t) - i32::from(dst_top));
-                let src_clip_left = i32::from(src_left) + (i32::from(clip_l) - i32::from(dst_left));
-                let src_clip_bottom = src_clip_top + clipped_height;
-                let src_clip_right = src_clip_left + clipped_width;
-                let mask_clip_top = i32::from(mask_top) + (i32::from(clip_t) - i32::from(dst_top));
-                let mask_clip_left =
-                    i32::from(mask_left) + (i32::from(clip_l) - i32::from(dst_left));
-                let mask_clip_bottom = mask_clip_top + clipped_height;
-                let mask_clip_right = mask_clip_left + clipped_width;
-                let buffered_geometry_valid = src_info.pixel_size == 8
-                    && mask_info.pixel_size == 1
-                    && dst_info.pixel_size == 8
-                    && no_src_scaling
-                    && no_mask_scaling
-                    && src_clip_top >= i32::from(src_info.bounds_top)
-                    && src_clip_left >= i32::from(src_info.bounds_left)
-                    && src_clip_bottom <= i32::from(src_info.bounds_bottom)
-                    && src_clip_right <= i32::from(src_info.bounds_right)
-                    && mask_clip_top >= i32::from(mask_info.bounds_top)
-                    && mask_clip_left >= i32::from(mask_info.bounds_left)
-                    && mask_clip_bottom <= i32::from(mask_info.bounds_bottom)
-                    && mask_clip_right <= i32::from(mask_info.bounds_right);
-                let buffered_spans_disjoint = if buffered_geometry_valid {
-                    let width = clipped_width as u32;
-                    let height = clipped_height as u32;
-                    let src_row = (src_clip_top - i32::from(src_info.bounds_top)) as u32;
-                    let src_col = (src_clip_left - i32::from(src_info.bounds_left)) as u32;
-                    let mask_row = (mask_clip_top - i32::from(mask_info.bounds_top)) as u32;
-                    let mask_col = (mask_clip_left - i32::from(mask_info.bounds_left)) as u32;
-                    let dst_row = (i32::from(clip_t) - i32::from(dst_info.bounds_top)) as u32;
-                    let dst_col = (i32::from(clip_l) - i32::from(dst_info.bounds_left)) as u32;
-                    let mask_first_byte = mask_col / 8;
-                    let mask_first_bit = mask_col % 8;
-                    let mask_byte_count = (mask_first_bit + width).div_ceil(8);
+                // Unscaled 8-bit sprites gated by a 1-bit mask execute through
+                // the shared MaskedRowCopy kernel, fetching each row once and
+                // storing each opaque run as one span; anything it declines
+                // falls back to the generic per-pixel loop below.
+                {
+                    use crate::copy_bits::{BytePixmap, MaskedRowCopy, MaskedRowCopyOutcome};
 
-                    let accessed_span = |base: u32,
-                                         row_bytes: u32,
-                                         first_row: u32,
-                                         first_col: u32,
-                                         rows: u32,
-                                         bytes: u32|
-                     -> Option<(u64, u64)> {
-                        if rows == 0 || bytes == 0 || first_col.checked_add(bytes)? > row_bytes {
-                            return None;
-                        }
-                        let start = u64::from(base)
-                            + u64::from(first_row) * u64::from(row_bytes)
-                            + u64::from(first_col);
-                        let end = u64::from(base)
-                            + u64::from(first_row.checked_add(rows - 1)?) * u64::from(row_bytes)
-                            + u64::from(first_col)
-                            + u64::from(bytes);
-                        (end <= u64::from(u32::MAX) + 1).then_some((start, end))
+                    let to_pixmap = |info: CopyBitmapInfo| BytePixmap {
+                        base: info.base,
+                        row_bytes: info.row_bytes,
+                        depth: info.pixel_size,
+                        bounds: [
+                            info.bounds_top,
+                            info.bounds_left,
+                            info.bounds_bottom,
+                            info.bounds_right,
+                        ]
+                        .map(i32::from),
                     };
-                    let src_span = accessed_span(
-                        src_info.base,
-                        src_info.row_bytes,
-                        src_row,
-                        src_col,
-                        height,
-                        width,
-                    );
-                    let mask_span = accessed_span(
-                        mask_info.base,
-                        mask_info.row_bytes,
-                        mask_row,
-                        mask_first_byte,
-                        height,
-                        mask_byte_count,
-                    );
-                    let dst_span = accessed_span(
-                        dst_info.base,
-                        dst_info.row_bytes,
-                        dst_row,
-                        dst_col,
-                        height,
-                        width,
-                    );
-                    match (src_span, mask_span, dst_span) {
-                        (Some(src), Some(mask), Some(dst)) => {
-                            let disjoint = |a: (u64, u64), b: (u64, u64)| a.1 <= b.0 || b.1 <= a.0;
-                            disjoint(src, dst) && disjoint(mask, dst)
-                        }
-                        _ => false,
+                    let outcome = MaskedRowCopy {
+                        source: to_pixmap(src_info),
+                        mask: to_pixmap(mask_info),
+                        destination: to_pixmap(dst_info),
+                        source_rect: [src_top, src_left, src_bottom, src_right].map(i32::from),
+                        mask_rect: [mask_top, mask_left, mask_bottom, mask_right].map(i32::from),
+                        destination_rect: [dst_top, dst_left, dst_bottom, dst_right]
+                            .map(i32::from),
+                        clip: [clip_t, clip_l, clip_b, clip_r].map(i32::from),
+                        palette: palette_translation.as_ref(),
                     }
-                } else {
-                    false
-                };
-                let row_buffered_8bpp_mask = buffered_geometry_valid && buffered_spans_disjoint;
-                if row_buffered_8bpp_mask {
-                    let width = clipped_width as usize;
-                    let src_col = (src_clip_left - i32::from(src_info.bounds_left)) as u32;
-                    let mask_col = (mask_clip_left - i32::from(mask_info.bounds_left)) as u32;
-                    let dst_col = (clip_l - dst_info.bounds_left) as u32;
-                    let mask_first_byte = mask_col / 8;
-                    let mask_first_bit = (mask_col % 8) as usize;
-                    let mask_byte_count = (mask_first_bit + width).div_ceil(8);
-                    let mut source_row = vec![0u8; width];
-                    let mut mask_row = vec![0u8; mask_byte_count];
-
-                    for dy in clip_t..clip_b {
-                        let relative_y = i32::from(dy) - i32::from(clip_t);
-                        let src_row =
-                            (src_clip_top + relative_y - i32::from(src_info.bounds_top)) as u32;
-                        let mask_row_index =
-                            (mask_clip_top + relative_y - i32::from(mask_info.bounds_top)) as u32;
-                        let dst_row = (dy - dst_info.bounds_top) as u32;
-                        bus.read_bytes_into(
-                            src_info.base + src_row * src_info.row_bytes + src_col,
-                            &mut source_row,
-                        );
-                        bus.read_bytes_into(
-                            mask_info.base + mask_row_index * mask_info.row_bytes + mask_first_byte,
-                            &mut mask_row,
-                        );
-
-                        let dst_row_base = dst_info.base + dst_row * dst_info.row_bytes + dst_col;
-                        if let Some(translation) = palette_translation.as_ref() {
-                            for pixel in &mut source_row {
-                                *pixel = translation[*pixel as usize];
-                            }
-                        }
-                        // Store each run of opaque pixels as one span. On a
-                        // presented screen row that is one presentation
-                        // update per run rather than per pixel, with the
-                        // same result as storing the pixels one at a time;
-                        // transparent pixels are not touched.
-                        let opaque = |column: usize| {
-                            let mask_bit = mask_first_bit + column;
-                            mask_row[mask_bit / 8] & (1 << (7 - mask_bit % 8)) != 0
-                        };
-                        let mut column = 0;
-                        while column < width {
-                            if !opaque(column) {
-                                column += 1;
-                                continue;
-                            }
-                            let start = column;
-                            while column < width && opaque(column) {
-                                column += 1;
-                            }
-                            bus.write_bytes(
-                                dst_row_base + start as u32,
-                                &source_row[start..column],
-                            );
-                        }
+                    .execute(bus);
+                    if outcome != MaskedRowCopyOutcome::Declined {
+                        return Some(Ok(()));
                     }
-                    return Some(Ok(()));
                 }
 
                 for dy in clip_t..clip_b {

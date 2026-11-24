@@ -6573,6 +6573,41 @@ pub(crate) fn ppc_copy_mask(
             }
         }
 
+        if memory.quickdraw_gpu_renderer().is_none() {
+            use crate::copy_bits::{BytePixmap, MaskedRowCopy, MaskedRowCopyOutcome};
+
+            let to_pixmap = |bits: PpcPixMapBits| BytePixmap {
+                base: bits.base_addr,
+                row_bytes: bits.row_bytes,
+                depth: bits.depth,
+                bounds: [bits.top, bits.left, bits.bottom, bits.right].map(i32::from),
+            };
+            match (MaskedRowCopy {
+                source: to_pixmap(src_bits),
+                mask: to_pixmap(mask_bits),
+                destination: to_pixmap(dst_bits),
+                source_rect: [src_rect.0, src_rect.1, src_rect.2, src_rect.3].map(i32::from),
+                mask_rect: [mask_rect.0, mask_rect.1, mask_rect.2, mask_rect.3].map(i32::from),
+                destination_rect: [dst_rect.0, dst_rect.1, dst_rect.2, dst_rect.3].map(i32::from),
+                clip: [copy_top, copy_left, copy_bottom, copy_right],
+                palette: palette_map.as_ref(),
+            })
+            .execute(memory)
+            {
+                MaskedRowCopyOutcome::Completed { wrote_any: true } => return Some(()),
+                MaskedRowCopyOutcome::Completed { wrote_any: false }
+                | MaskedRowCopyOutcome::NoOp => {
+                    reason = "no-pixels";
+                    return None;
+                }
+                MaskedRowCopyOutcome::WriteFailure { .. } => {
+                    reason = "write-failed";
+                    return None;
+                }
+                MaskedRowCopyOutcome::Declined => {}
+            }
+        }
+
         // Imaging With QuickDraw (1994), pp. 3-119--3-120: CopyMask scales
         // srcRect and maskRect to dstRect, transferring a source pixel only
         // where the corresponding one-bit mask pixel is set (black).
