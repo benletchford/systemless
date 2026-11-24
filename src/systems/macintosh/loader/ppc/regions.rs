@@ -4,6 +4,20 @@ use super::graphics::*;
 use super::*;
 use crate::quickdraw::raster::region_rows;
 
+pub(crate) fn ppc_port_bounds_rect_addr(memory: &mut PpcSectionMem, port: u32) -> Option<u32> {
+    if port == 0 {
+        return None;
+    }
+    let is_color = memory.read_u16_be(port.checked_add(6)?)? & 0x8000 != 0;
+    if is_color {
+        let pixmap_handle = memory.read_u32_be(port.checked_add(2)?)?;
+        let pixmap = memory.read_u32_be(pixmap_handle)?;
+        pixmap.checked_add(6)
+    } else {
+        port.checked_add(8)
+    }
+}
+
 pub(super) fn ppc_transform_port_point(
     memory: &mut PpcSectionMem,
     port: u32,
@@ -13,9 +27,8 @@ pub(super) fn ppc_transform_port_point(
     if port == 0 || point_ptr == 0 {
         return None;
     }
-    let pixmap_handle = memory.read_u32_be(port.checked_add(2)?)?;
-    let pixmap = memory.read_u32_be(pixmap_handle)?;
-    let origin = memory.read_u32_be(pixmap.checked_add(6)?)?;
+    let bounds_addr = ppc_port_bounds_rect_addr(memory, port)?;
+    let origin = memory.read_u32_be(bounds_addr)?;
     let pixel_top = (origin >> 16) as i16;
     let pixel_left = origin as i16;
     let point = memory.read_u32_be(point_ptr)?;
@@ -36,20 +49,15 @@ pub(super) fn ppc_transform_port_point(
 }
 
 pub(super) fn ppc_set_port_origin(memory: &mut PpcSectionMem, port: u32, h: i16, v: i16) -> Option<()> {
-    if port == 0 {
-        return None;
-    }
-    let pixmap_handle = memory.read_u32_be(port.checked_add(2)?)?;
-    let pixmap = memory.read_u32_be(pixmap_handle)?;
-    let (pixel_top, pixel_left, pixel_bottom, pixel_right) =
-        ppc_read_rect(memory, pixmap.checked_add(6)?)?;
+    let bounds_addr = ppc_port_bounds_rect_addr(memory, port)?;
+    let (pixel_top, pixel_left, pixel_bottom, pixel_right) = ppc_read_rect(memory, bounds_addr)?;
     let (port_top, port_left, port_bottom, port_right) =
         ppc_read_rect(memory, port.checked_add(16)?)?;
     let vertical_delta = v.wrapping_sub(port_top);
     let horizontal_delta = h.wrapping_sub(port_left);
     ppc_write_rect(
         memory,
-        pixmap + 6,
+        bounds_addr,
         pixel_top.wrapping_add(vertical_delta),
         pixel_left.wrapping_add(horizontal_delta),
         pixel_bottom.wrapping_add(vertical_delta),

@@ -4523,29 +4523,44 @@ pub(crate) fn ppc_resolve_pixmap_bits(
     ppc_resolve_pixmap_bits_with_provenance(memory, gworlds, bits_ptr).map(|resolved| resolved.bits)
 }
 
+/// Returns `PPC_MAIN_PIXMAP` when `bits_ptr` is a basic `BitMap` (`rowBytes`
+/// high bit clear) whose `baseAddr` addresses a multi-bit main screen.
+pub(crate) fn ppc_screen_bitmap_pixmap(
+    memory: &mut PpcSectionMem,
+    bits_ptr: u32,
+) -> Option<u32> {
+    let basic_bitmap = bits_ptr
+        .checked_add(4)
+        .and_then(|row_bytes| memory.read_u16_be(row_bytes))
+        .is_some_and(|row_bytes| row_bytes & 0x8000 == 0);
+    if !basic_bitmap {
+        return None;
+    }
+    let base_addr = memory.read_u32_be(bits_ptr).filter(|addr| *addr != 0)?;
+    let screen = ppc_read_pixmap_bits(memory, PPC_MAIN_PIXMAP)?;
+    (screen.base_addr == base_addr && screen.depth != 1).then_some(PPC_MAIN_PIXMAP)
+}
+
 /// An old-style GrafPort's portBits is a basic BitMap. When it addresses the
 /// screen, Color QuickDraw draws through the screen's PixMap, so a window
 /// created with NewWindow on a 16-bit screen still receives 16-bit pixels.
 /// Such a BitMap keeps its own bounds and takes the screen's depth and
 /// rowBytes; any other BitMap remains one bit deep.
-fn ppc_screen_bitmap_as_screen_pixmap(
+pub(crate) fn ppc_screen_bitmap_as_screen_pixmap(
     memory: &mut PpcSectionMem,
     bits_ptr: u32,
     bits: PpcPixMapBits,
 ) -> PpcPixMapBits {
-    let basic_bitmap = memory
-        .read_u16_be(bits_ptr + 4)
-        .is_some_and(|row_bytes| row_bytes & 0x8000 == 0);
-    if !basic_bitmap {
+    let Some(pixmap) = ppc_screen_bitmap_pixmap(memory, bits_ptr) else {
         return bits;
-    }
-    match ppc_read_pixmap_bits(memory, PPC_MAIN_PIXMAP) {
-        Some(screen) if screen.base_addr == bits.base_addr && screen.depth != 1 => PpcPixMapBits {
-            row_bytes: screen.row_bytes,
-            depth: screen.depth,
-            ..bits
-        },
-        _ => bits,
+    };
+    let Some(screen) = ppc_read_pixmap_bits(memory, pixmap) else {
+        return bits;
+    };
+    PpcPixMapBits {
+        row_bytes: screen.row_bytes,
+        depth: screen.depth,
+        ..bits
     }
 }
 
@@ -5024,24 +5039,60 @@ pub(crate) fn ppc_resolve_pixmap_ctable_handle_with_provenance(
     gworlds: &[PpcGWorldRecord],
     bits_ptr: u32,
 ) -> PpcOptionalHandleResolution {
-    let tracked_pixmap = gworlds.iter().find_map(|record| {
+    let mut tracked_pixmap = None;
+    for record in gworlds {
         if record.pixmap == bits_ptr {
-            return Some(record.pixmap);
+            tracked_pixmap = Some(record.pixmap);
+            break;
         }
         if record.pixmap_handle == bits_ptr {
-            return memory.read_u32_be(bits_ptr);
+            if let Some(pixmap) = memory.read_u32_be(bits_ptr) {
+                tracked_pixmap = Some(pixmap);
+                break;
+            }
+            continue;
         }
         if record.port == bits_ptr || record.port.checked_add(2) == Some(bits_ptr) {
-            let port_bits = record.port.checked_add(2)?;
-            return memory
-                .read_u32_be(port_bits)
-                .and_then(|pixmap_handle| memory.read_u32_be(pixmap_handle));
+            let Some(port_bits) = record.port.checked_add(2) else {
+                continue;
+            };
+            let is_color = record
+                .port
+                .checked_add(6)
+                .and_then(|row_bytes| memory.read_u16_be(row_bytes))
+                .map(|row_bytes| row_bytes & 0x8000 != 0);
+            match is_color {
+                Some(true) => {
+                    if let Some(pixmap) = memory
+                        .read_u32_be(port_bits)
+                        .and_then(|pixmap_handle| memory.read_u32_be(pixmap_handle))
+                    {
+                        tracked_pixmap = Some(pixmap);
+                        break;
+                    }
+                }
+                Some(false) => {
+                    if let Some(screen_pixmap) = ppc_screen_bitmap_pixmap(memory, port_bits) {
+                        tracked_pixmap = Some(screen_pixmap);
+                        break;
+                    }
+                    if ppc_read_pixmap_bits(memory, port_bits).is_some() {
+                        return PpcOptionalHandleResolution {
+                            handle: None,
+                            known: false,
+                        };
+                    }
+                }
+                None => {}
+            }
         }
-        None
-    });
+    }
     let pixmap = tracked_pixmap.or_else(|| {
         if ppc_is_color_port_bitmap_proxy(memory, bits_ptr) {
             return ppc_color_port_bitmap_proxy_pixmap(memory, bits_ptr);
+        }
+        if let Some(screen_pixmap) = ppc_screen_bitmap_pixmap(memory, bits_ptr) {
+            return Some(screen_pixmap);
         }
         let direct_is_pixmap = bits_ptr
             .checked_add(4)
@@ -5049,6 +5100,9 @@ pub(crate) fn ppc_resolve_pixmap_ctable_handle_with_provenance(
             .is_some_and(|row_bytes| row_bytes & 0x8000 != 0);
         if direct_is_pixmap {
             return Some(bits_ptr);
+        }
+        if ppc_read_pixmap_bits(memory, bits_ptr).is_some() {
+            return None;
         }
         let indirect = memory.read_u32_be(bits_ptr)?;
         indirect
