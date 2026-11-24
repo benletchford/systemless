@@ -543,10 +543,8 @@ pub(super) fn dispatch_textedit_import(
                 let port = memory
                     .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
                     .unwrap_or(0);
-                let bounds = memory
-                    .read_u32_be(port + 2)
-                    .and_then(|handle| memory.read_u32_be(handle))
-                    .and_then(|pixmap| ppc_read_rect(memory, pixmap + 6))
+                let bounds = ppc_port_bounds_rect_addr(memory, port)
+                    .and_then(|bounds_addr| ppc_read_rect(memory, bounds_addr))
                     .unwrap_or((0, 0, 0, 0));
                 let v = input.mouse_v.wrapping_add(bounds.0);
                 let h = input.mouse_h.wrapping_add(bounds.1);

@@ -8,13 +8,27 @@ pub(crate) fn ppc_live_gworld_ctable_handle(
     gworld: u32,
 ) -> Option<u32> {
     let record = gworlds.iter().find(|record| record.port == gworld)?;
-    let live_pixmap = gworld
+    let is_color = gworld
         .checked_add(6)
         .and_then(|row_bytes| memory.read_u16_be(row_bytes))
-        .filter(|row_bytes| row_bytes & 0x8000 != 0)
-        .and_then(|_| gworld.checked_add(2))
-        .and_then(|port_bits| memory.read_u32_be(port_bits))
-        .and_then(|pixmap_handle| memory.read_u32_be(pixmap_handle));
+        .map(|row_bytes| row_bytes & 0x8000 != 0);
+    let live_pixmap = match is_color {
+        Some(true) => gworld
+            .checked_add(2)
+            .and_then(|port_bits| memory.read_u32_be(port_bits))
+            .and_then(|pixmap_handle| memory.read_u32_be(pixmap_handle)),
+        Some(false) => {
+            let port_bits = gworld.checked_add(2)?;
+            if let Some(screen_pixmap) = ppc_screen_bitmap_pixmap(memory, port_bits) {
+                Some(screen_pixmap)
+            } else if ppc_read_pixmap_bits(memory, port_bits).is_some() {
+                return None;
+            } else {
+                None
+            }
+        }
+        None => None,
+    };
     let pixmap = live_pixmap.or_else(|| (record.pixmap != 0).then_some(record.pixmap))?;
     let ctable_handle = memory
         .read_u32_be(pixmap.checked_add(42)?)
@@ -444,7 +458,26 @@ pub(crate) fn ppc_live_quickdraw_surface(
             });
             Some((bits, ctable_handle))
         } else {
-            let mut bits = ppc_read_pixmap_bits(memory, port_bits)?;
+            // Inside Macintosh: Imaging With QuickDraw (1994), pp. 2-38--2-40
+            // and 4-5: a basic GrafPort opened with OpenPort starts with
+            // screenBits in portBits, and when portBits addresses the screen
+            // Color QuickDraw draws through the screen's PixMap and ColorTable
+            // at the screen's pixel depth.
+            let raw_bits = ppc_read_pixmap_bits(memory, port_bits)?;
+            let mut bits = ppc_screen_bitmap_as_screen_pixmap(memory, port_bits, raw_bits);
+            let ctable_handle = ppc_screen_bitmap_pixmap(memory, port_bits)
+                .and_then(|pixmap| pixmap.checked_add(42))
+                .and_then(|pm_table| memory.read_u32_be(pm_table))
+                .filter(|handle| *handle != 0)
+                .map(|handle| {
+                    record
+                        .and_then(|record| {
+                            ppc_device_ctable_for_device_indexed_pixmap(
+                                memory, handle, record, bits.depth,
+                            )
+                        })
+                        .unwrap_or(handle)
+                });
             let row_capacity = bits.row_bytes.checked_mul(8)?.checked_div(bits.depth)?;
             if bits.width > row_capacity {
                 // Basic GrafPorts commonly start as a copy of screenBits and
@@ -467,7 +500,7 @@ pub(crate) fn ppc_live_quickdraw_surface(
                 bits.width = width;
                 bits.height = height;
             }
-            Some((bits, None))
+            Some((bits, ctable_handle))
         }
     });
     live_bits

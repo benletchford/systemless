@@ -2849,3 +2849,165 @@ fn set_depth_leaves_the_cleared_screen_when_the_menu_bar_is_hidden() {
     }
     assert!(loaded.event_queue().is_empty());
 }
+
+#[test]
+fn open_port_draws_and_transforms_coordinates_on_an_indexed_screen() {
+    // Inside Macintosh: Imaging With QuickDraw (1994), pp. 2-38--2-40 and 4-5:
+    // OpenPort initializes a basic GrafPort's portBits from screenBits, and
+    // while portBits addresses the screen Color QuickDraw draws at the screen's
+    // depth through the screen's ColorTable rather than packing 1-bit rows.
+    let pef = synthetic_pef_with_import(b"OpenPort");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 0).unwrap();
+    loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+    loaded.cpu.gpr[4] = 8;
+    loaded.cpu.gpr[5] = 1;
+    loaded.cpu.gpr[6] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    let custom_rgb = PpcRgbColor {
+        red: 0x1313,
+        green: 0x9797,
+        blue: 0xedec,
+    };
+    let custom_entry = PPC_MAIN_CTABLE + 8 + 42 * 8;
+    loaded.memory.write_u16_be(custom_entry, 42).unwrap();
+    loaded
+        .memory
+        .write_u16_be(custom_entry + 2, custom_rgb.red)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(custom_entry + 4, custom_rgb.green)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(custom_entry + 6, custom_rgb.blue)
+        .unwrap();
+
+    // Populate the start of screen RAM with high-bit bytes so mistaking
+    // portBits.baseAddr for a PixMapHandle or indirect PixMap fails visibly.
+    loaded
+        .memory
+        .write_bytes(PPC_MAIN_SCREEN_BASE, &[0x80; 8])
+        .unwrap();
+
+    let scratch = PPC_DATA_BASE + 0x9000;
+    loaded.memory.add_region(scratch, vec![0; 0x200]);
+    let port = scratch;
+    loaded.cpu.gpr[3] = port;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::OpenPort);
+    assert_eq!(loaded.memory.read_u16_be(port + 6).unwrap() & 0x8000, 0);
+
+    let screen_surface =
+        ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, port).unwrap();
+    assert_eq!(screen_surface.front_buffer.depth, 8);
+    assert_eq!(screen_surface.ctable_handle, Some(PPC_MAIN_CTABLE_HANDLE));
+    assert_eq!(
+        ppc_live_gworld_ctable_handle(&mut loaded.memory, &loaded.gworlds, port),
+        Some(PPC_MAIN_CTABLE_HANDLE)
+    );
+
+    loaded.quickdraw_fore_color = custom_rgb;
+    loaded.quickdraw_fore_indices.remove(&port);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::OpenPoly);
+    let polygon = loaded.cpu.gpr[3];
+    assert_ne!(polygon, 0);
+    for (target, h, v) in [
+        (PpcImportDispatcherTarget::MoveTo, 396u32, 36u32),
+        (PpcImportDispatcherTarget::LineTo, 404, 36),
+        (PpcImportDispatcherTarget::LineTo, 404, 44),
+        (PpcImportDispatcherTarget::LineTo, 396, 44),
+        (PpcImportDispatcherTarget::LineTo, 396, 36),
+    ] {
+        loaded.cpu.gpr[3] = h;
+        loaded.cpu.gpr[4] = v;
+        run_test_import(&mut loaded, target);
+    }
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ClosePoly);
+    loaded.cpu.gpr[3] = polygon;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PaintPoly);
+
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, screen_surface.front_buffer, (400, 40)),
+        Some(42),
+        "polygon interior should draw 8-bit pixels at the requested horizontal coordinate"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, screen_surface.front_buffer, (50, 40)),
+        Some(0xff),
+        "1-bit byte column 400 / 8 = 50 must remain untouched"
+    );
+
+    let standalone_screen_bits = scratch + 0x100;
+    let port_bits_bytes = ppc_memory_read_bytes(&mut loaded.memory, port + 2, 14).unwrap();
+    loaded
+        .memory
+        .write_bytes(standalone_screen_bits, &port_bits_bytes)
+        .unwrap();
+    for bits_ptr in [port + 2, standalone_screen_bits] {
+        let resolved = ppc_resolve_pixmap_ctable_handle_with_provenance(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            bits_ptr,
+        );
+        assert_eq!(resolved.handle, Some(PPC_MAIN_CTABLE_HANDLE));
+        assert!(resolved.known);
+    }
+
+    ppc_set_port_origin(&mut loaded.memory, port, -10, -20).unwrap();
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, PPC_MAIN_SCREEN_BASE, 8),
+        Some(vec![0x80; 8]),
+        "SetOrigin on a basic GrafPort must update inline portBits.bounds rather than screen RAM"
+    );
+    let point_ptr = scratch + 0x120;
+    loaded
+        .memory
+        .write_u32_be(point_ptr, ((-20i16 as u16 as u32) << 16) | (-10i16 as u16 as u32))
+        .unwrap();
+    ppc_transform_port_point(&mut loaded.memory, port, point_ptr, true).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(point_ptr), Some(0));
+
+    let offscreen_bits = scratch + 0x140;
+    let offscreen_pixels = scratch + 0x160;
+    loaded
+        .memory
+        .write_bytes(offscreen_pixels, &[0x80; 16])
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(offscreen_bits, offscreen_pixels)
+        .unwrap();
+    loaded.memory.write_u16_be(offscreen_bits + 4, 2).unwrap();
+    ppc_write_rect(&mut loaded.memory, offscreen_bits + 6, 0, 0, 8, 16).unwrap();
+    loaded.cpu.gpr[3] = offscreen_bits;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SetPortBits { color: false },
+    );
+
+    let offscreen_surface =
+        ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, port).unwrap();
+    assert_eq!(offscreen_surface.front_buffer.depth, 1);
+    assert_eq!(offscreen_surface.ctable_handle, None);
+    assert_eq!(
+        ppc_live_gworld_ctable_handle(&mut loaded.memory, &loaded.gworlds, port),
+        None
+    );
+    loaded.memory.write_bytes(port + 40, &[0xff; 8]).unwrap();
+    for bits_ptr in [port, port + 2, offscreen_bits] {
+        let resolved = ppc_resolve_pixmap_ctable_handle_with_provenance(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            bits_ptr,
+        );
+        assert_eq!(
+            resolved.handle,
+            None,
+            "1-bit BitMap at ${bits_ptr:08X} must not dereference pixel or GrafPort bytes as a PixMap"
+        );
+        assert!(!resolved.known, "1-bit BitMap at ${bits_ptr:08X} has no ColorTable");
+    }
+}
