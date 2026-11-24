@@ -1013,7 +1013,7 @@ pub(super) struct PpcQ3StorageFileDispatchContext<'a> {
     pub(super) heap_limit: u32,
     pub(super) last_mem_error: &'a mut i16,
     pub(super) vfs_volumes: &'a [PpcVfsVolumeRecord],
-    pub(super) vfs_directories: &'a mut Vec<PpcVfsDirectory>,
+    pub(super) vfs_directories: &'a mut ProcessVfsDirectoryRecords,
     pub(super) vfs_files: &'a mut ProcessVfsFileRecords,
 }
 

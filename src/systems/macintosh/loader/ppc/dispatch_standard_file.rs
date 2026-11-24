@@ -92,7 +92,7 @@ pub(super) struct PpcStandardFileDispatchContext<'a> {
     pub(super) heap_cursor: &'a mut u32,
     pub(super) last_mem_error: &'a mut i16,
     pub(super) gworlds: &'a [PpcGWorldRecord],
-    pub(super) vfs_directories: &'a mut Vec<PpcVfsDirectory>,
+    pub(super) vfs_directories: &'a mut ProcessVfsDirectoryRecords,
     pub(super) vfs_files: &'a ProcessVfsFileRecords,
     pub(super) vfs_resource_files: &'a [PpcVfsResourceFileRecord],
     pub(super) vfs_volumes: &'a [PpcVfsVolumeRecord],
