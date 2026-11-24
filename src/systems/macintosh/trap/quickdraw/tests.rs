@@ -9528,6 +9528,36 @@
     }
 
     #[test]
+    fn pat_bic_dimming_handles_a_port_at_the_coordinate_limit() {
+        // A one-row screen port whose local coordinates run from 32764 to
+        // 32767: the pattern tile alignment must not overflow i16, and the
+        // paint follows the pattern at those coordinates (32764 % 8 = 4).
+        const W: usize = DIM_PORT_W as usize;
+        let (mut d, mut cpu, mut bus, base, pixmap) = text_on_presented_port(16, "oar");
+        bus.fill_bytes(base, 3, 255);
+        let (left, right) = (32764i16, 32767i16);
+        bus.write_word(pixmap + 6, 0);
+        bus.write_word(pixmap + 8, left as u16);
+        bus.write_word(pixmap + 10, 1);
+        bus.write_word(pixmap + 12, right as u16);
+        let port = *d.current_port;
+        write_rect(&mut bus, port + 16, 0, left, 1, right);
+        let rgn = bus.alloc(10);
+        let rgn_handle = bus.alloc(4);
+        make_rgn(&mut bus, rgn, rgn_handle, 0, left, 1, right);
+        bus.write_long(port + 24, rgn_handle);
+        bus.write_long(port + 28, rgn_handle);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        d.pn_mode = 11;
+        d.pn_pat = GRAY;
+        let rect = Rect { top: 0, left, bottom: 1, right };
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+        // Gray's first row is 0xAA: local x % 8 of 4 and 6 are cleared, 5 is not.
+        assert_eq!(bus.read_bytes(base, 3), vec![0, 255, 0]);
+        assert_eq!(bus.read_bytes(base + 3, W - 3).iter().filter(|&&p| p == 255).count(), 0);
+    }
+
+    #[test]
     fn outline_detail_survives_copybits_scrollrect_and_invertrect() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let base = bus.alloc(256);

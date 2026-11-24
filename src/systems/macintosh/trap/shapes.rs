@@ -1933,8 +1933,11 @@ impl super::TrapDispatcher {
             let mut cleared = 0u64;
             for row in 0..8i16 {
                 for col in 0..8i16 {
-                    let pattern_row = effective_pn_pat[(row + bounds_top).rem_euclid(8) as usize];
-                    if pattern_row & (1 << (7 - (col + bounds_left).rem_euclid(8))) != 0 {
+                    // Wrapping keeps the low three bits, all the alignment
+                    // needs, for bounds near the ends of the i16 range.
+                    let pattern_row =
+                        effective_pn_pat[row.wrapping_add(bounds_top).rem_euclid(8) as usize];
+                    if pattern_row & (1 << (7 - col.wrapping_add(bounds_left).rem_euclid(8))) != 0 {
                         cleared |= 1 << (row * 8 + col);
                     }
                 }

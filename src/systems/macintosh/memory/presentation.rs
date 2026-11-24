@@ -2524,7 +2524,7 @@ impl Presentation {
             return false;
         };
         let (x1, y1) = self
-            .position(address + len as u32 - 1)
+            .position(address.saturating_add(len as u32 - 1))
             .unwrap_or((self.width - 1, self.height - 1));
         let width = self.width as usize;
         (y0..=y1).any(|y| {
