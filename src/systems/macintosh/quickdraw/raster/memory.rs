@@ -9,6 +9,10 @@ use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 pub(crate) trait RasterMemory {
     /// Stores one prepared run of destination bytes at `addr`.
     fn write_row(&mut self, addr: u32, bytes: &[u8]) -> Option<()>;
+
+    /// Reads `buf.len()` destination bytes at `addr` into `buf`, runs `f` on
+    /// them, and stores the modified bytes back in one run.
+    fn modify_row(&mut self, addr: u32, buf: &mut [u8], f: impl FnOnce(&mut [u8])) -> Option<()>;
 }
 
 /// 68K: one `write_bytes` per run, keeping `MacMemoryBus`'s Flat-span
@@ -19,6 +23,14 @@ impl RasterMemory for MacMemoryBus {
         self.write_bytes(addr, bytes);
         Some(())
     }
+
+    #[inline(always)]
+    fn modify_row(&mut self, addr: u32, buf: &mut [u8], f: impl FnOnce(&mut [u8])) -> Option<()> {
+        self.read_bytes_into(addr, buf);
+        f(buf);
+        self.write_bytes(addr, buf);
+        Some(())
+    }
 }
 
 /// PowerPC: one `write_bytes` per run, so one presentation note per run, as
@@ -27,5 +39,12 @@ impl RasterMemory for GuestAddressSpace {
     #[inline(always)]
     fn write_row(&mut self, addr: u32, bytes: &[u8]) -> Option<()> {
         self.write_bytes(addr, bytes)
+    }
+
+    #[inline(always)]
+    fn modify_row(&mut self, addr: u32, buf: &mut [u8], f: impl FnOnce(&mut [u8])) -> Option<()> {
+        self.read_bytes_into(addr, buf)?;
+        f(buf);
+        self.write_bytes(addr, buf)
     }
 }

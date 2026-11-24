@@ -7,7 +7,7 @@
 
 use super::memory::RasterMemory;
 use super::region_rows::intersect_rows;
-use super::transfer::PatCopyRows;
+use super::transfer::{apply_bit_row_op, apply_boolean_row_8, BitRowOp, PatCopyRows};
 use crate::trap::types::Rect;
 
 #[cfg(test)]
@@ -49,7 +49,6 @@ impl Depth {
 
 /// Pattern transfer modes (Imaging With QuickDraw (1994), pp. 3-9--3-10).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // Only patCopy has a kernel so far; the rest are declined.
 pub(crate) enum TransferMode {
     PatCopy,
     PatOr,
@@ -59,6 +58,46 @@ pub(crate) enum TransferMode {
     NotPatOr,
     NotPatXor,
     NotPatBic,
+}
+
+impl TransferMode {
+    /// Normalizes a QuickDraw source (`0..=7`) or pattern (`8..=15`) boolean
+    /// transfer mode; out-of-range values fall back to `PatCopy`.
+    #[inline]
+    pub(crate) fn from_quickdraw_mode(mode: i16) -> Self {
+        let normalized = match mode {
+            0..=7 => mode,
+            8..=15 => mode - 8,
+            _ => 0,
+        };
+        match normalized {
+            0 => Self::PatCopy,
+            1 => Self::PatOr,
+            2 => Self::PatXor,
+            3 => Self::PatBic,
+            4 => Self::NotPatCopy,
+            5 => Self::NotPatOr,
+            6 => Self::NotPatXor,
+            _ => Self::NotPatBic,
+        }
+    }
+
+    /// Whether the mode inverts the source pattern bits before applying the
+    /// boolean operation (`notPat*`).
+    #[inline]
+    pub(crate) fn inverts_source(self) -> bool {
+        matches!(
+            self,
+            Self::NotPatCopy | Self::NotPatOr | Self::NotPatXor | Self::NotPatBic
+        )
+    }
+
+    /// Whether the mode replaces every covered destination pixel without
+    /// reading the old pixel value (`patCopy` / `notPatCopy`).
+    #[inline]
+    pub(crate) fn is_copy(self) -> bool {
+        matches!(self, Self::PatCopy | Self::NotPatCopy)
+    }
 }
 
 /// The kind of pattern a draw uses.
@@ -76,9 +115,12 @@ pub(crate) enum PatternKind {
 /// nothing extra.
 #[inline]
 pub(crate) fn supports(depth: Depth, mode: TransferMode, pattern: PatternKind) -> bool {
-    depth.whole_byte_pixel_len().is_some()
-        && mode == TransferMode::PatCopy
-        && pattern == PatternKind::Mono
+    pattern == PatternKind::Mono
+        && match depth {
+            Depth::D8 => true,
+            Depth::D16 => mode.is_copy(),
+            _ => false,
+        }
 }
 
 /// A pixel image in port coordinates: the pixel at `(bounds.left,
@@ -174,6 +216,31 @@ impl ClipRows {
             rows: Some(rows),
         }
     }
+
+    /// Visits each covered `(y, run_left, run_right)` interval of `area`.
+    #[inline(always)]
+    fn for_each_run(&self, area: Rect, mut f: impl FnMut(i32, i32, i32)) {
+        let (top, bottom) = (i32::from(area.top), i32::from(area.bottom));
+        match &self.rows {
+            None => {
+                let (left, right) = (i32::from(area.left), i32::from(area.right));
+                for y in top..bottom {
+                    f(y, left, right);
+                }
+            }
+            Some(clip_rows) => {
+                let clip_top = i32::from(self.bbox.top);
+                for y in top..bottom {
+                    let Some(clip_row) = clip_rows.get((y - clip_top) as usize) else {
+                        continue;
+                    };
+                    for run in intersect_rows(&[area.left, area.right], clip_row).chunks_exact(2) {
+                        f(y, i32::from(run[0]), i32::from(run[1]));
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// How to colour the covered pixels: already-resolved destination pixel
@@ -239,10 +306,8 @@ pub(crate) fn paint_rect<M: RasterMemory>(
             touched: EMPTY_RECT,
         };
     };
-    let (top, left) = (i32::from(area.top), i32::from(area.left));
-    let (bottom, right) = (i32::from(area.bottom), i32::from(area.right));
-    let width = (right - left) as usize;
-    let mut rows = PatCopyRows::new(scratch, ink, left, width, pixel_len);
+    let left = i32::from(area.left);
+    let width = (i32::from(area.right) - left) as usize;
     let origin_v = i32::from(ink.pat_origin.1);
     let image_top = i32::from(surface.bounds.top);
     let image_left = i32::from(surface.bounds.left);
@@ -252,25 +317,78 @@ pub(crate) fn paint_rect<M: RasterMemory>(
             .wrapping_add(((y - image_top) as u32).wrapping_mul(surface.row_bytes))
             .wrapping_add(((x - image_left) as u32).wrapping_mul(pixel_len as u32))
     };
-    for y in top..bottom {
-        let prepared = rows.row((y - origin_v).rem_euclid(8) as usize);
-        match &clip.rows {
-            None => {
-                let _ = memory.write_row(pixel_address(y, left), prepared);
-            }
-            Some(clip_rows) => {
-                let Some(clip_row) = clip_rows.get((y - i32::from(clip.bbox.top)) as usize) else {
-                    continue;
-                };
-                let runs = intersect_rows(&[area.left, area.right], clip_row);
-                for run in runs.chunks_exact(2) {
-                    let (run_left, run_right) = (i32::from(run[0]), i32::from(run[1]));
-                    let start = (run_left - left) as usize * pixel_len;
-                    let end = (run_right - left) as usize * pixel_len;
-                    let _ = memory.write_row(pixel_address(y, run_left), &prepared[start..end]);
-                }
-            }
-        }
+    if ink.mode.is_copy() {
+        let mut rows = PatCopyRows::new(scratch, ink, left, width, pixel_len);
+        clip.for_each_run(area, |y, run_left, run_right| {
+            let prepared = rows.row((y - origin_v).rem_euclid(8) as usize);
+            let start = (run_left - left) as usize * pixel_len;
+            let end = (run_right - left) as usize * pixel_len;
+            let _ = memory.write_row(pixel_address(y, run_left), &prepared[start..end]);
+        });
+    } else {
+        debug_assert_eq!(surface.depth, Depth::D8);
+        let (fg, bg) = (ink.fg as u8, ink.bg as u8);
+        let origin_h = i32::from(ink.pat_origin.0);
+        scratch.clear();
+        scratch.resize(width, 0);
+        clip.for_each_run(area, |y, run_left, run_right| {
+            let pat_row = (y - origin_v).rem_euclid(8) as usize;
+            let rotate = (run_left - origin_h).rem_euclid(8) as u32;
+            let bits = ink.pattern[pat_row].rotate_left(rotate);
+            let run_len = (run_right - run_left) as usize;
+            let _ = memory.modify_row(pixel_address(y, run_left), &mut scratch[..run_len], |row| {
+                apply_boolean_row_8(row, bits, ink.mode, fg, bg);
+            });
+        });
     }
+    DrawOutcome::Drawn { touched: area }
+}
+
+/// Applies a uniform 1-bpp whole-row operation (`Set`, `Clear`, or `Toggle`)
+/// over `rect` (port coordinates) on a `Depth::D1` `surface`, clipped to the
+/// image, `surface.row_bytes * 8`, and `clip`.
+pub(crate) fn paint_solid_1bpp_rect<M: RasterMemory>(
+    memory: &mut M,
+    surface: &Surface,
+    clip: &ClipRows,
+    rect: Rect,
+    op: BitRowOp,
+    scratch: &mut Vec<u8>,
+) -> DrawOutcome {
+    if surface.depth != Depth::D1 {
+        return DrawOutcome::Declined;
+    }
+    let Some(area) = surface
+        .clip(rect)
+        .and_then(|area| intersect(area, clip.bbox))
+    else {
+        return DrawOutcome::Drawn {
+            touched: EMPTY_RECT,
+        };
+    };
+    let image_top = i32::from(surface.bounds.top);
+    let image_left = i32::from(surface.bounds.left);
+    let max_bits = surface.row_bytes.saturating_mul(8);
+    let first_bit = (i32::from(area.left) - image_left) as u32;
+    let end_bit = ((i32::from(area.right) - image_left) as u32).min(max_bits);
+    if first_bit >= end_bit {
+        return DrawOutcome::Drawn {
+            touched: EMPTY_RECT,
+        };
+    }
+    let max_middle = ((end_bit - 1) / 8).saturating_sub(first_bit / 8 + 1) as usize;
+    let fill = if op == BitRowOp::Set { 0xFF } else { 0x00 };
+    scratch.clear();
+    scratch.resize(max_middle, fill);
+    clip.for_each_run(area, |y, run_left, run_right| {
+        let run_first = (run_left - image_left) as u32;
+        let run_end = ((run_right - image_left) as u32).min(max_bits);
+        if run_first < run_end {
+            let row_base = surface
+                .base
+                .wrapping_add(((y - image_top) as u32).wrapping_mul(surface.row_bytes));
+            let _ = apply_bit_row_op(memory, row_base, run_first, run_end, op, scratch);
+        }
+    });
     DrawOutcome::Drawn { touched: area }
 }

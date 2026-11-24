@@ -5,6 +5,7 @@ use crate::cpu::{CpuOps, Register};
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::MONO_COVERAGE_THRESHOLD;
 use crate::quickdraw::raster::spans;
+use crate::quickdraw::raster::transfer::BitRowOp;
 use crate::Result;
 
 /// Linear-blend of fg → bg by `alpha` (0=bg, 255=fg). Channels are 16-bit
@@ -442,14 +443,6 @@ fn normalize_boolean_transfer_mode(mode: i16) -> i16 {
     }
 }
 
-/// What a whole-row 1bpp operation does to every bit of the clipped rect.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum BitRowOp {
-    Set,
-    Clear,
-    Toggle,
-}
-
 /// A solid all-black pattern sets every bit and a solid all-white pattern
 /// clears every bit (`apply_boolean_transfer_1` in srcCopy: the result is
 /// the source bit); anything else needs the per-pixel pattern lookup.
@@ -461,53 +454,6 @@ fn solid_bit_row_op(pattern: [u8; 8]) -> Option<BitRowOp> {
     } else {
         None
     }
-}
-
-/// Apply `op` to bits `first_bit..end_bit` (MSB-first, as QuickDraw packs
-/// them) of the 1bpp row at `row_base`: masked read-modify-write of the two
-/// edge bytes, one bulk write for the whole bytes between.
-fn apply_bit_row_op(
-    bus: &mut MacMemoryBus,
-    row_base: u32,
-    first_bit: u32,
-    end_bit: u32,
-    op: BitRowOp,
-) {
-    debug_assert!(first_bit < end_bit);
-    let first_byte = first_bit / 8;
-    let last_byte = (end_bit - 1) / 8;
-    let head_mask = 0xFFu8 >> (first_bit % 8);
-    let tail_mask = 0xFFu8 << (7 - ((end_bit - 1) % 8));
-    let apply = |old: u8, mask: u8| match op {
-        BitRowOp::Set => old | mask,
-        BitRowOp::Clear => old & !mask,
-        BitRowOp::Toggle => old ^ mask,
-    };
-    if first_byte == last_byte {
-        let addr = row_base + first_byte;
-        bus.write_byte(addr, apply(bus.read_byte(addr), head_mask & tail_mask));
-        return;
-    }
-    let head_addr = row_base + first_byte;
-    bus.write_byte(head_addr, apply(bus.read_byte(head_addr), head_mask));
-    let middle = last_byte - first_byte - 1;
-    if middle > 0 {
-        let middle_addr = head_addr + 1;
-        match op {
-            BitRowOp::Set => bus.fill_bytes(middle_addr, middle, 0xFF),
-            BitRowOp::Clear => bus.fill_bytes(middle_addr, middle, 0x00),
-            BitRowOp::Toggle => {
-                let mut row = vec![0u8; middle as usize];
-                bus.read_bytes_into(middle_addr, &mut row);
-                for byte in row.iter_mut() {
-                    *byte = !*byte;
-                }
-                bus.write_bytes(middle_addr, &row);
-            }
-        }
-    }
-    let tail_addr = row_base + last_byte;
-    bus.write_byte(tail_addr, apply(bus.read_byte(tail_addr), tail_mask));
 }
 
 fn invert_indexed_pixel(old: u8) -> u8 {
@@ -2016,69 +1962,72 @@ impl super::TrapDispatcher {
             }
         }
 
-        if pixel_size == 8
-            && full_rect_coverage
-            && !has_complex_port_clip
-            && installed_raw_pixpat.is_none()
-        {
-            // Whole-row 8bpp paths: a solid srcCopy fill writes one prepared
-            // row per scanline; InvertRect maps each row through `255 - x`
-            // (exactly `invert_indexed_pixel`, applied per pixel below) --
-            // both instead of one bus round trip per pixel.
-            let solid_fill_idx = self.solid_src_copy_fill_index(
-                &op,
-                fg_idx,
-                bg_idx,
-                effective_pn_pat,
-                effective_bk_pat,
-            );
-            let invert_rows = matches!(op, ShapeOp::Invert);
-            if solid_fill_idx.is_some() || invert_rows {
-                let top = r.top.max(clip_top);
-                let left = r.left.max(clip_left);
-                let bottom = r.bottom.min(clip_bottom);
-                let right = r.right.min(clip_right);
-                if top < bottom && left < right {
+        // Whole-row 8-bpp rectangular paths (solid and monochrome-patterned
+        // Paint/Erase, solid Fill, and Invert). Monochrome draws route through
+        // the shared raster core; raw PixPats keep the per-row CLUT lookup
+        // until pixel-pattern decoding moves into the shared core. Patterns
+        // remain aligned to port coordinates. Inside Macintosh Volume I, I-149
+        // and I-157; Imaging With QuickDraw (1994), p. 4-82.
+        if pixel_size == 8 && full_rect_coverage && !has_complex_port_clip {
+            use crate::quickdraw::raster::paint::{
+                paint_rect, ClipRows, Depth, DrawOutcome, Ink, Surface, TransferMode,
+            };
+            let top = r.top.max(clip_top);
+            let left = r.left.max(clip_left);
+            let bottom = r.bottom.min(clip_bottom);
+            let right = r.right.min(clip_right);
+            let bounds = Rect {
+                top: bounds_top,
+                left: bounds_left,
+                bottom: bounds_bottom,
+                right: bounds_right,
+            };
+            let clip_rect = Rect {
+                top: clip_top,
+                left: clip_left,
+                bottom: clip_bottom,
+                right: clip_right,
+            };
+            if installed_raw_pixpat.is_none() {
+                let mono_ink = match op {
+                    ShapeOp::Paint => Some(Ink {
+                        fg: u32::from(fg_idx),
+                        bg: u32::from(bg_idx),
+                        pattern: effective_pn_pat,
+                        mode: TransferMode::from_quickdraw_mode(self.pn_mode),
+                        pat_origin: (0, 0),
+                    }),
+                    ShapeOp::Erase => Some(Ink {
+                        fg: u32::from(fg_idx),
+                        bg: u32::from(bg_idx),
+                        pattern: effective_bk_pat,
+                        mode: TransferMode::PatCopy,
+                        pat_origin: (0, 0),
+                    }),
+                    ShapeOp::Fill(pattern) if pattern == [0xFF; 8] || pattern == [0x00; 8] => {
+                        Some(Ink {
+                            fg: u32::from(fg_idx),
+                            bg: u32::from(bg_idx),
+                            pattern,
+                            mode: TransferMode::PatCopy,
+                            pat_origin: (0, 0),
+                        })
+                    }
+                    _ => None,
+                };
+                let invert_rows = matches!(op, ShapeOp::Invert);
+                if (mono_ink.is_some() || invert_rows) && top < bottom && left < right {
                     let dx = (left - bounds_left) as u32;
                     let width = (right - left) as u32;
                     if dx < pix_row_bytes && width <= pix_row_bytes.saturating_sub(dx) {
-                        if invert_rows {
-                            for y in top..bottom {
-                                let dy = (y - bounds_top) as u32;
-                                let addr = pix_base + dy * pix_row_bytes + dx;
-                                for offset in 0..width {
-                                    bus.invert_screen_byte(addr + offset);
-                                }
-                            }
-                        } else if let Some(fill_idx) = solid_fill_idx {
-                            use crate::quickdraw::raster::paint::{
-                                paint_rect, ClipRows, Depth, DrawOutcome, Ink, Surface,
-                                TransferMode,
-                            };
+                        if let Some(ink) = mono_ink {
                             let surface = Surface {
                                 base: pix_base,
                                 row_bytes: pix_row_bytes,
                                 depth: Depth::D8,
-                                bounds: Rect {
-                                    top: bounds_top,
-                                    left: bounds_left,
-                                    bottom: bounds_bottom,
-                                    right: bounds_right,
-                                },
+                                bounds,
                             };
-                            let clip = ClipRows::rectangular(Rect {
-                                top: clip_top,
-                                left: clip_left,
-                                bottom: clip_bottom,
-                                right: clip_right,
-                            });
-                            let ink = Ink {
-                                fg: u32::from(fill_idx),
-                                bg: u32::from(fill_idx),
-                                pattern: [0xFF; 8],
-                                mode: TransferMode::PatCopy,
-                                pat_origin: (0, 0),
-                            };
+                            let clip = ClipRows::rectangular(clip_rect);
                             let outcome = paint_rect(
                                 bus,
                                 &surface,
@@ -2088,6 +2037,14 @@ impl super::TrapDispatcher {
                                 &mut self.raster_scratch,
                             );
                             debug_assert!(matches!(outcome, DrawOutcome::Drawn { .. }));
+                        } else {
+                            for y in top..bottom {
+                                let dy = (y - bounds_top) as u32;
+                                let addr = pix_base + dy * pix_row_bytes + dx;
+                                for offset in 0..width {
+                                    bus.invert_screen_byte(addr + offset);
+                                }
+                            }
                         }
                         let screen_rect = (
                             top.saturating_sub(bounds_top),
@@ -2104,39 +2061,22 @@ impl super::TrapDispatcher {
                         return;
                     }
                 }
-            }
-        }
-
-        // A rectangular patterned draw has no per-pixel coverage or complex
-        // region test. Prepare each clipped row in memory, then commit it in
-        // one write so the destination and presentation plane observe the
-        // same transfer result without a bus round trip for every pixel.
-        // Patterns remain aligned to port coordinates. Inside Macintosh
-        // Volume I, I-149 and I-157; Imaging With QuickDraw (1994), p. 4-82.
-        if pixel_size == 8
-            && full_rect_coverage
-            && !has_complex_port_clip
-            && matches!(op, ShapeOp::Paint | ShapeOp::Erase)
-        {
-            let top = r.top.max(clip_top);
-            let left = r.left.max(clip_left);
-            let bottom = r.bottom.min(clip_bottom);
-            let right = r.right.min(clip_right);
-            if top < bottom && left < right {
+            } else if matches!(op, ShapeOp::Paint | ShapeOp::Erase) && top < bottom && left < right
+            {
                 let dx = (left - bounds_left) as u32;
                 let width = (right - left) as u32;
                 if dx < pix_row_bytes && width <= pix_row_bytes.saturating_sub(dx) {
-                    let mut raw_indices = [None; 256];
-                    for y in top..bottom {
-                        let dy = (y - bounds_top) as u32;
-                        let addr = pix_base + dy * pix_row_bytes + dx;
-                        let mut row = bus.read_bytes(addr, width as usize);
-                        let mut has_source = installed_raw_pixpat.is_none();
-                        for (offset, pixel) in row.iter_mut().enumerate() {
-                            let x = (i32::from(left) + offset as i32) as i16;
-                            if let (Some(pixpat), Some(dst_clut)) =
-                                (installed_raw_pixpat.as_ref(), indexed_clut.as_ref())
-                            {
+                    if let (Some(pixpat), Some(dst_clut)) =
+                        (installed_raw_pixpat.as_ref(), indexed_clut.as_ref())
+                    {
+                        let mut raw_indices = [None; 256];
+                        for y in top..bottom {
+                            let dy = (y - bounds_top) as u32;
+                            let addr = pix_base + dy * pix_row_bytes + dx;
+                            let mut row = bus.read_bytes(addr, width as usize);
+                            let mut has_source = false;
+                            for (offset, pixel) in row.iter_mut().enumerate() {
+                                let x = (i32::from(left) + offset as i32) as i16;
                                 if let Some(source_index) =
                                     Self::raw_pixpat_index_at(bus, pixpat, y, x)
                                 {
@@ -2151,32 +2091,10 @@ impl super::TrapDispatcher {
                                     *pixel = *destination_index;
                                     has_source = true;
                                 }
-                            } else if matches!(op, ShapeOp::Paint) {
-                                let source_is_black = effective_pn_pat[y.rem_euclid(8) as usize]
-                                    & (1 << (7 - x.rem_euclid(8)))
-                                    != 0;
-                                *pixel = apply_boolean_transfer_8(
-                                    *pixel,
-                                    self.pn_mode,
-                                    source_is_black,
-                                    fg_idx,
-                                    bg_idx,
-                                );
-                            } else {
-                                let source_is_black = effective_bk_pat[y.rem_euclid(8) as usize]
-                                    & (1 << (7 - x.rem_euclid(8)))
-                                    != 0;
-                                *pixel = apply_boolean_transfer_8(
-                                    *pixel,
-                                    0,
-                                    source_is_black,
-                                    fg_idx,
-                                    bg_idx,
-                                );
                             }
-                        }
-                        if has_source {
-                            bus.write_bytes(addr, &row);
+                            if has_source {
+                                bus.write_bytes(addr, &row);
+                            }
                         }
                     }
                     let screen_rect = (
@@ -2197,10 +2115,7 @@ impl super::TrapDispatcher {
         // "set", "clear" or "toggle" every bit of the clipped rect --
         // Erase with a solid pattern, srcCopy Paint/Fill with a solid
         // pattern, and Invert (mode 2 with a black source, i.e. `!old`) --
-        // become masked writes at the two edge bytes and one bulk write in
-        // between, exactly what `apply_boolean_transfer_1` yields per pixel.
-        // EV Override clears its 1-bit offscreen buffers at boot with an
-        // EraseRect + InvertRect pair over 8.3 M pixels each.
+        // route through the shared 1-bpp row kernel.
         if pixel_size == 1 && full_rect_coverage && !has_complex_port_clip {
             let bit_op = match op {
                 ShapeOp::Invert => Some(BitRowOp::Toggle),
@@ -2218,16 +2133,35 @@ impl super::TrapDispatcher {
                 let bottom = r.bottom.min(clip_bottom);
                 let right = r.right.min(clip_right);
                 if top < bottom && left < right {
-                    let first_bit = (left - bounds_left) as u32;
-                    // Pixels past the row's last byte are skipped, as the
-                    // per-pixel arm does.
-                    let end_bit = ((right - bounds_left) as u32).min(pix_row_bytes * 8);
-                    if first_bit < end_bit {
-                        for y in top..bottom {
-                            let row_base = pix_base + (y - bounds_top) as u32 * pix_row_bytes;
-                            apply_bit_row_op(bus, row_base, first_bit, end_bit, bit_op);
-                        }
-                    }
+                    use crate::quickdraw::raster::paint::{
+                        paint_solid_1bpp_rect, ClipRows, Depth, DrawOutcome, Surface,
+                    };
+                    let surface = Surface {
+                        base: pix_base,
+                        row_bytes: pix_row_bytes,
+                        depth: Depth::D1,
+                        bounds: Rect {
+                            top: bounds_top,
+                            left: bounds_left,
+                            bottom: bounds_bottom,
+                            right: bounds_right,
+                        },
+                    };
+                    let clip = ClipRows::rectangular(Rect {
+                        top: clip_top,
+                        left: clip_left,
+                        bottom: clip_bottom,
+                        right: clip_right,
+                    });
+                    let outcome = paint_solid_1bpp_rect(
+                        bus,
+                        &surface,
+                        &clip,
+                        *r,
+                        bit_op,
+                        &mut self.raster_scratch,
+                    );
+                    debug_assert!(matches!(outcome, DrawOutcome::Drawn { .. }));
                     let screen_rect = (
                         top.saturating_sub(bounds_top),
                         left.saturating_sub(bounds_left),
@@ -2879,31 +2813,6 @@ impl super::TrapDispatcher {
                     eprintln!("[MENU-REDRAW] Shape probe={} pixel={}", label, pixel);
                 }
             }
-        }
-    }
-
-
-    #[inline]
-    fn solid_src_copy_fill_index(
-        &self,
-        op: &ShapeOp,
-        fg_idx: u8,
-        bg_idx: u8,
-        pn_pat: [u8; 8],
-        bk_pat: [u8; 8],
-    ) -> Option<u8> {
-        let pattern = match op {
-            ShapeOp::Paint if normalize_boolean_transfer_mode(self.pn_mode) == 0 => pn_pat,
-            ShapeOp::Erase => bk_pat,
-            ShapeOp::Fill(pattern) => *pattern,
-            _ => return None,
-        };
-        if pattern == [0xFF; 8] {
-            Some(fg_idx)
-        } else if pattern == [0x00; 8] {
-            Some(bg_idx)
-        } else {
-            None
         }
     }
 }
