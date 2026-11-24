@@ -356,9 +356,10 @@ impl super::TrapDispatcher {
         if !is_underline {
             // No underline, no outline/shadow: simple per-character drawing
             bus.begin_presentation_text_run(self.tx_mode == 0);
+            let mut erased_right = None;
             for i in 0..len {
                 let ch = bus.read_byte(s_ptr + 1 + i as u32);
-                self.draw_char(cpu, bus, ch as char);
+                self.draw_run_char(cpu, bus, ch as char, &mut erased_right);
             }
             bus.end_presentation_text_run();
             return;
@@ -647,9 +648,10 @@ impl super::TrapDispatcher {
 
         // Draw all characters (they will use the global underline info)
         bus.begin_presentation_text_run(self.tx_mode == 0);
+        let mut erased_right = None;
         for i in 0..len {
             let ch = bus.read_byte(s_ptr + 1 + i as u32);
-            self.draw_char(cpu, bus, ch as char);
+            self.draw_run_char(cpu, bus, ch as char, &mut erased_right);
         }
 
         bus.end_presentation_text_run();
@@ -658,6 +660,12 @@ impl super::TrapDispatcher {
     }
 
     pub(super) fn draw_char<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus, ch: char) {
+        self.draw_run_char(cpu, bus, ch, &mut None);
+    }
+
+    pub(super) fn draw_run_char<C: CpuOps>(
+        &mut self, cpu: &mut C, bus: &mut MacMemoryBus, ch: char, erased_right: &mut Option<i16>,
+    ) {
         // Check text face for styling
         let is_bold = (self.text_synthesized_face() & 1) != 0;
         let is_italic_requested = (self.tx_face & 2) != 0;
@@ -834,25 +842,50 @@ impl super::TrapDispatcher {
                 // Both copy modes replace the complete character cell, including
                 // spaces. notSrcCopy reverses the source mask, so its zero/white
                 // source pixels map to foreground rather than background.
+                //
+                // QuickDraw transfers a whole string's image at once, so a
+                // slanted (or otherwise overhanging) character keeps the
+                // pixels that reach into the next character's cell. Drawn
+                // one character at a time, the background under an
+                // overhang is replaced with this character, and the next
+                // character on the same line starts after it rather than
+                // erasing it again.
                 let fbbdy = scaled_ascent + scaled_descent;
+                // The presentation shears italic on its finer grid, where
+                // the top edge reaches up to a guest pixel further.
+                let italic_top_slant = if is_italic {
+                    get_italic_slant(self.tx_font, self.tx_size, &metrics, v, glyph_visual_top) * fs
+                        + 1
+                } else {
+                    0
+                };
+                let cell_right = h + glyph.advance as i16 * fs;
+                let ink_right = right + style_smear + italic_top_slant + style_pad;
+                let erase_left = h.max(erased_right.unwrap_or(h));
+                let erase_right = cell_right.max(ink_right);
+                *erased_right = Some(erase_right.max(erase_left));
                 let copy_rect = Rect {
                     top: v - (fbbdy - scaled_descent),
-                    left: h,
+                    left: erase_left,
                     bottom: v + scaled_descent,
-                    right: h + glyph.advance as i16 * fs,
+                    right: erase_right,
                 };
-                if let Some(mut p) = bus.presentation.as_mut() {
-                    p.erasing_text = true;
+                if copy_rect.left < copy_rect.right {
+                    if let Some(mut p) = bus.presentation.as_mut() {
+                        p.erasing_text = true;
+                    }
+                    let background_op = if self.tx_mode == 4 {
+                        ShapeOp::Fill([0xFF; 8])
+                    } else {
+                        ShapeOp::Erase
+                    };
+                    self.draw_rect(cpu, bus, &copy_rect, background_op);
+                    if let Some(mut p) = bus.presentation.as_mut() {
+                        p.erasing_text = false;
+                    }
                 }
-                let background_op = if self.tx_mode == 4 {
-                    ShapeOp::Fill([0xFF; 8])
-                } else {
-                    ShapeOp::Erase
-                };
-                self.draw_rect(cpu, bus, &copy_rect, background_op);
-                if let Some(mut p) = bus.presentation.as_mut() {
-                    p.erasing_text = false;
-                }
+            } else {
+                *erased_right = None;
             }
 
             // Extract underline info for continuous underline (if set by draw_string)
