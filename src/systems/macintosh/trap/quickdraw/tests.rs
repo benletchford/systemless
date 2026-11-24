@@ -8572,6 +8572,961 @@
         assert_eq!(plain_copy, plain_or);
     }
 
+    /// QuickDraw's gray pattern, which TCL uses to dim a disabled pane.
+    const GRAY: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
+
+    /// The guest pixels and presented RGB of `dim_text_on_presented_port`.
+    struct DimmedText {
+        before: Vec<u8>,
+        after: Vec<u8>,
+        after_second: Vec<u8>,
+        presented_before: Vec<u8>,
+        once: Vec<u8>,
+        twice: Vec<u8>,
+    }
+
+    /// Draw `text` in the system font at baseline `v` on a white 8-bit port
+    /// presented at 4x, set the background color to `background` with
+    /// RGBBackColor if given, then paint the port in patBic with the gray
+    /// pattern and again with `second`, the way TCL dims a disabled pane.
+    fn dim_text_on_presented_port(
+        v: i16,
+        text: &str,
+        second: [u8; 8],
+        background: Option<(u16, u16, u16)>,
+    ) -> DimmedText {
+        const W: u16 = DIM_PORT_W;
+        const H: u16 = DIM_PORT_H;
+        let (mut d, mut cpu, mut bus, base, _) = text_on_presented_port(v, text);
+        let len = usize::from(W) * usize::from(H);
+        let before = bus.read_bytes(base, len);
+        let presented_before = bus.outline_presentation_rgb().unwrap().2;
+        if let Some((red, green, blue)) = background {
+            let rgb = bus.alloc(6);
+            bus.write_word(rgb, red);
+            bus.write_word(rgb + 2, green);
+            bus.write_word(rgb + 4, blue);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, rgb);
+            d.dispatch_quickdraw(true, 0x215, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+        }
+        d.pn_pat = GRAY;
+        d.pn_mode = 11;
+        let rect = Rect {
+            top: 0,
+            left: 0,
+            bottom: H as i16,
+            right: W as i16,
+        };
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+        let after = bus.read_bytes(base, len);
+        let once = bus.outline_presentation_rgb().unwrap().2;
+        d.pn_pat = second;
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+        let after_second = bus.read_bytes(base, len);
+        let twice = bus.outline_presentation_rgb().unwrap().2;
+        DimmedText {
+            before,
+            after,
+            after_second,
+            presented_before,
+            once,
+            twice,
+        }
+    }
+
+    const DIM_PORT_W: u16 = 120;
+    const DIM_PORT_H: u16 = 24;
+
+    /// A white 120 by 24 8-bit screen port presented at 4x, with `text`
+    /// drawn in the system font at 12 points at baseline `v`, in srcOr.
+    /// Returns it with the screen base and the port's PixMap.
+    fn text_on_presented_port(
+        v: i16,
+        text: &str,
+    ) -> (
+        TrapDispatcher,
+        super::super::test_helpers::MockCpu,
+        MacMemoryBus,
+        u32,
+        u32,
+    ) {
+        const W: u16 = DIM_PORT_W;
+        const H: u16 = DIM_PORT_H;
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let base = bus.alloc(u32::from(W) * u32::from(H));
+        d.screen_mode = (base, u32::from(W), W, H, 8);
+        bus.write_long(0x0824, base);
+        bus.fill_bytes(base, u32::from(W) * u32::from(H), 0);
+        let palette = std::array::from_fn(|i| [255 - i as u8; 3]);
+        bus.enable_outline_presentation(d.screen_mode, palette, 4);
+        let port = *d.current_port;
+        let pixmap = bus.alloc(50);
+        let pixmap_handle = bus.alloc(4);
+        write_pixmap_8(&mut bus, pixmap, base, W, H, 0);
+        bus.write_long(pixmap_handle, pixmap);
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        write_rect(&mut bus, port + 16, 0, 0, H as i16, W as i16);
+        let rgn = bus.alloc(10);
+        let rgn_handle = bus.alloc(4);
+        make_rgn(&mut bus, rgn, rgn_handle, 0, 0, H as i16, W as i16);
+        bus.write_long(port + 24, rgn_handle);
+        bus.write_long(port + 28, rgn_handle);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        draw_dim_test_text(&mut d, &mut cpu, &mut bus, v, text);
+        (d, cpu, bus, base, pixmap)
+    }
+
+    fn draw_dim_test_text(
+        d: &mut TrapDispatcher,
+        cpu: &mut super::super::test_helpers::MockCpu,
+        bus: &mut MacMemoryBus,
+        v: i16,
+        text: &str,
+    ) {
+        d.fg_color = (0, 0, 0);
+        d.tx_font = 0;
+        d.tx_size = 12;
+        d.tx_face = 0;
+        d.tx_mode = 1;
+        d.pn_loc = (v, 14);
+        for ch in text.chars() {
+            d.draw_char(cpu, bus, ch);
+        }
+    }
+
+    #[test]
+    fn gray_pat_bic_dims_outline_text_without_dropping_strokes() {
+        // TCL dims a disabled pane by painting it with the gray pattern in
+        // patBic. The guest pixels follow QuickDraw exactly, so a one-pixel
+        // dot such as a colon or period is cleared on rows where the pattern
+        // has a bit over it. The presented text keeps every stroke instead,
+        // at half strength, which is what the checkerboard reads as.
+        const W: usize = 120;
+        const SCALE: usize = 4;
+        for v in [16, 17] {
+            let DimmedText {
+                before,
+                after,
+                after_second,
+                once,
+                twice,
+                ..
+            } = dim_text_on_presented_port(v, "oar: $30.00", GRAY, None);
+            assert_eq!(
+                after_second, after,
+                "a second gray paint changes no guest pixel"
+            );
+            assert!(before.iter().any(|&pixel| pixel != 0), "the text draws");
+            for (offset, (&old, &new)) in before.iter().zip(&after).enumerate() {
+                let (x, y) = (offset % W, offset / W);
+                let pattern_bit = (x + y) % 2 == 0;
+                let expected = if pattern_bit { 0 } else { old };
+                assert_eq!(new, expected, "guest pixel ({x}, {y}) at baseline {v}");
+            }
+            let mut inked = 0;
+            for (offset, &old) in before.iter().enumerate() {
+                if old == 0 {
+                    continue;
+                }
+                inked += 1;
+                let (x, y) = (offset % W, offset / W);
+                let samples: Vec<[u8; 3]> = (0..SCALE * SCALE)
+                    .map(|i| {
+                        let px = x * SCALE + i % SCALE;
+                        let py = y * SCALE + i / SCALE;
+                        let at = (py * W * SCALE + px) * 3;
+                        [once[at], once[at + 1], once[at + 2]]
+                    })
+                    .collect();
+                assert!(
+                    samples.iter().any(|rgb| rgb[0] < 250),
+                    "the stroke at guest pixel ({x}, {y}) survives dimming at baseline {v}"
+                );
+                assert!(
+                    samples.iter().all(|rgb| rgb[0] >= 100),
+                    "the stroke at guest pixel ({x}, {y}) is dimmed at baseline {v}"
+                );
+            }
+            assert!(inked > 0);
+            assert!(once == twice, "dimming twice looks like dimming once");
+        }
+    }
+
+    #[test]
+    fn complementary_pat_bic_paints_clear_outline_text() {
+        // Two patBic paints whose patterns together cover every pixel clear
+        // the text from the guest, and the presentation must follow, while
+        // patterns with the same number of bits that overlap (stripes, here)
+        // leave the text dimmed as before.
+        let inverted = GRAY.map(|row| !row);
+        let DimmedText {
+            before,
+            after_second,
+            twice,
+            ..
+        } = dim_text_on_presented_port(16, "oar: $30.00", inverted, None);
+        assert!(before.iter().any(|&pixel| pixel != 0), "the text draws");
+        assert!(
+            after_second.iter().all(|&pixel| pixel == 0),
+            "the guest is cleared"
+        );
+        let nonwhite = twice.chunks(3).filter(|rgb| rgb[0] != 255).count();
+        assert_eq!(
+            nonwhite, 0,
+            "presented pixels left after complementary paints"
+        );
+
+        // Vertical stripes share half their bits with the gray checkerboard.
+        let stripes = [0xAA; 8];
+        let DimmedText {
+            before,
+            after_second,
+            twice,
+            ..
+        } = dim_text_on_presented_port(16, "oar: $30.00", stripes, None);
+        assert!(
+            before
+                .iter()
+                .zip(&after_second)
+                .any(|(&old, &new)| old != 0 && new == old),
+            "some text pixels survive both paints"
+        );
+        let nonwhite = twice.chunks(3).filter(|rgb| rgb[0] != 255).count();
+        assert!(
+            nonwhite > 0,
+            "the text stays dimmed when the paints overlap"
+        );
+    }
+
+    #[test]
+    fn pat_bic_dims_every_sample_in_proportion_toward_the_cleared_color() {
+        // Gray patBic leaves half of every 8x8 tile, so each presented
+        // sample of the text, antialiased edges included, must show half its
+        // undimmed color and half the color the guest clears to: white as
+        // TCL dims, or blue after RGBBackColor changed the background
+        // between drawing the text and dimming it.
+        const W: usize = DIM_PORT_W as usize;
+        let palette: [[u8; 3]; 256] = std::array::from_fn(|i| [255 - i as u8; 3]);
+        for background in [None, Some((0, 0, 0xFFFF))] {
+            let DimmedText {
+                before,
+                after,
+                after_second,
+                presented_before,
+                once,
+                twice,
+            } = dim_text_on_presented_port(16, "oar: $30.00", GRAY, background);
+            let cleared_to = after[0];
+            assert_eq!(
+                cleared_to != 0,
+                background.is_some(),
+                "the cleared-to index"
+            );
+            let expected_guest: Vec<u8> = before
+                .iter()
+                .enumerate()
+                .map(|(offset, &old)| {
+                    if (offset % W + offset / W) % 2 == 0 {
+                        cleared_to
+                    } else {
+                        old
+                    }
+                })
+                .collect();
+            assert_eq!(after, expected_guest, "guest pixels follow patBic");
+            assert_eq!(after_second, after, "a second paint changes no guest pixel");
+            let antialiased = (0..presented_before.len() / 3)
+                .filter(|&i| (1..255).contains(&presented_before[i * 3]))
+                .count();
+            assert!(antialiased > 0, "the text has antialiased edge samples");
+            let target = u32::from(palette[usize::from(cleared_to)][0]);
+            let checked = assert_text_samples(&presented_before, &once, |original| {
+                (original * 128 + target * 127 + 127) / 255
+            });
+            assert!(checked > 0);
+            assert!(once == twice, "dimming twice looks like dimming once");
+        }
+    }
+
+    /// Check every sample of every text cell (a guest pixel with a
+    /// non-white sample in `before`) of `after` against `expected` of the
+    /// sample's value in `before`, within 2; returns how many were checked.
+    fn assert_text_samples(before: &[u8], after: &[u8], expected: impl Fn(u32) -> u32) -> usize {
+        const W: usize = DIM_PORT_W as usize;
+        const H: usize = DIM_PORT_H as usize;
+        const SCALE: usize = 4;
+        let mut checked = 0;
+        for y in 0..H {
+            for x in 0..W {
+                let at = |i: usize| ((y * SCALE + i / SCALE) * W * SCALE + x * SCALE + i % SCALE) * 3;
+                if (0..SCALE * SCALE).all(|i| before[at(i)] == 255) {
+                    continue;
+                }
+                for i in 0..SCALE * SCALE {
+                    let original = u32::from(before[at(i)]);
+                    let want = expected(original) as i32;
+                    let actual = i32::from(after[at(i)]);
+                    assert!(
+                        (actual - want).abs() <= 2,
+                        "sample {i} of guest pixel ({x}, {y}): {actual}, expected {want} \
+                             (was {original})"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        checked
+    }
+
+    #[test]
+    fn pat_bic_paints_to_two_colors_keep_both() {
+        // Gray clears to blue, then a one-dot pattern clears to white. The
+        // dot is one of gray's bits, so 32 of the 64 tile bits keep the
+        // text, 31 hold blue and 1 holds white, and each sample shows that
+        // mix.
+        const W: usize = DIM_PORT_W as usize;
+        const H: usize = DIM_PORT_H as usize;
+        let palette: [[u8; 3]; 256] = std::array::from_fn(|i| [255 - i as u8; 3]);
+        let (mut d, mut cpu, mut bus, base, _) = text_on_presented_port(16, "oar: $30.00");
+        let presented_before = bus.outline_presentation_rgb().unwrap().2;
+        let rect = Rect {
+            top: 0,
+            left: 0,
+            bottom: H as i16,
+            right: W as i16,
+        };
+        let set_background = |d: &mut TrapDispatcher,
+                              cpu: &mut super::super::test_helpers::MockCpu,
+                              bus: &mut MacMemoryBus,
+                              (red, green, blue): (u16, u16, u16)| {
+            let rgb = bus.alloc(6);
+            bus.write_word(rgb, red);
+            bus.write_word(rgb + 2, green);
+            bus.write_word(rgb + 4, blue);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, rgb);
+            d.dispatch_quickdraw(true, 0x215, cpu, bus)
+                .unwrap()
+                .unwrap();
+        };
+        set_background(&mut d, &mut cpu, &mut bus, (0, 0, 0xFFFF));
+        d.pn_mode = 11;
+        d.pn_pat = GRAY;
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+        let blue = bus.read_bytes(base, 1)[0];
+        assert_ne!(blue, 0);
+        set_background(&mut d, &mut cpu, &mut bus, (0xFFFF, 0xFFFF, 0xFFFF));
+        d.pn_mode = 11;
+        d.pn_pat = [0x80, 0, 0, 0, 0, 0, 0, 0];
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+        let guest = bus.read_bytes(base, W * H);
+        assert_eq!(guest[0], 0, "the dot clears to white");
+        assert_eq!(guest[2], blue, "the other gray bits keep blue");
+        let presented = bus.outline_presentation_rgb().unwrap().2;
+        let blue_value = u32::from(palette[usize::from(blue)][0]);
+        let checked = assert_text_samples(&presented_before, &presented, |original| {
+            (original * 32 + blue_value * 31 + 255 + 32) / 64
+        });
+        assert!(checked > 0);
+    }
+
+
+    #[test]
+    fn pat_bic_coverage_follows_screen_pixels_across_port_origins() {
+        // The pattern is aligned to each port's local coordinates. Gray
+        // through a port whose origin is one pixel to the left clears the
+        // screen pixels the first gray paint left, so together they clear
+        // the text from the guest and the presentation must follow.
+        const W: usize = DIM_PORT_W as usize;
+        const H: usize = DIM_PORT_H as usize;
+        const SCALE: usize = 4;
+        let (mut d, mut cpu, mut bus, base, pixmap) = text_on_presented_port(16, "oar: $30.00");
+        assert!(bus.read_bytes(base, W * H).iter().any(|&pixel| pixel != 0));
+        d.pn_pat = GRAY;
+        d.pn_mode = 11;
+        let rect = Rect {
+            top: 0,
+            left: 0,
+            bottom: H as i16,
+            right: W as i16,
+        };
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+        // portBits.bounds left -1: local x is screen x - 1.
+        bus.write_word(pixmap + 8, (-1i16) as u16);
+        bus.write_word(pixmap + 12, (W - 1) as u16);
+        let port = *d.current_port;
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+        let guest = bus.read_bytes(base, W * H);
+        let presented = bus.outline_presentation_rgb().unwrap().2;
+        // Screen column 0 lies outside the second paint.
+        for y in 0..H {
+            for x in 1..W {
+                assert_eq!(guest[y * W + x], 0, "guest pixel ({x}, {y})");
+                for i in 0..SCALE * SCALE {
+                    let at = ((y * SCALE + i / SCALE) * W * SCALE + x * SCALE + i % SCALE) * 3;
+                    assert_eq!(presented[at], 255, "sample {i} of guest pixel ({x}, {y})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn redrawn_text_starts_dimming_afresh() {
+        // Erasing and redrawing the text drops what earlier paints covered:
+        // the inverse of gray over redrawn text dims it as on a fresh port
+        // instead of completing the earlier gray paint's coverage.
+        const W: usize = DIM_PORT_W as usize;
+        const H: usize = DIM_PORT_H as usize;
+        let inverted = GRAY.map(|row| !row);
+        let rect = Rect {
+            top: 0,
+            left: 0,
+            bottom: H as i16,
+            right: W as i16,
+        };
+
+        let (mut d, mut cpu, mut bus, base, _) = text_on_presented_port(16, "oar: $30.00");
+        d.pn_mode = 11;
+        d.pn_pat = GRAY;
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Erase);
+        draw_dim_test_text(&mut d, &mut cpu, &mut bus, 16, "oar: $30.00");
+        d.pn_mode = 11;
+        d.pn_pat = inverted;
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+        let redrawn = (
+            bus.read_bytes(base, W * H),
+            bus.outline_presentation_rgb().unwrap().2,
+        );
+
+        let (mut d, mut cpu, mut bus, base, _) = text_on_presented_port(16, "oar: $30.00");
+        d.pn_mode = 11;
+        d.pn_pat = inverted;
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+        let fresh = (
+            bus.read_bytes(base, W * H),
+            bus.outline_presentation_rgb().unwrap().2,
+        );
+
+        assert_eq!(redrawn.0, fresh.0, "guest pixels");
+        assert!(
+            fresh.1.iter().any(|&value| value != 255),
+            "the text stays dimmed"
+        );
+        assert!(redrawn.1 == fresh.1, "presented pixels");
+    }
+
+    #[test]
+    fn inverting_dimmed_text_inverts_what_later_paints_dim() {
+        // InvertRect inverts the guest's pixels, the dimmed text and the
+        // color the paint cleared to alike. A later gray paint then shows
+        // half the inverted text and half white, as the guest's pixels
+        // average, and repeating invert and dim keeps returning to the same
+        // two looks without growing the stored ink.
+        const W: usize = DIM_PORT_W as usize;
+        const H: usize = DIM_PORT_H as usize;
+        let (mut d, mut cpu, mut bus, base, _) = text_on_presented_port(16, "oar: $30.00");
+        let original = bus.outline_presentation_rgb().unwrap().2;
+        let rect = Rect {
+            top: 0,
+            left: 0,
+            bottom: H as i16,
+            right: W as i16,
+        };
+        let nodes = |bus: &MacMemoryBus| -> usize {
+            (0..(W * H) as u32)
+                .map(|offset| bus.test_indexed_detail_nodes(base + offset))
+                .sum()
+        };
+        let mut history = Vec::new();
+        for cycle in 0..12 {
+            d.pn_mode = 11;
+            d.pn_pat = GRAY;
+            d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+            let presented = bus.outline_presentation_rgb().unwrap().2;
+            // The grayscale test palette maps index i to 255 - i, so
+            // inverting an index turns value v into 255 - v.
+            let inverted = cycle % 2 == 1;
+            assert_text_samples(&original, &presented, |value| {
+                let shown = if inverted { 255 - value } else { value };
+                (shown * 128 + 255 * 127 + 127) / 255
+            });
+            d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Invert);
+            history.push((
+                bus.read_bytes(base, W * H),
+                bus.outline_presentation_rgb().unwrap().2,
+                nodes(&bus),
+            ));
+        }
+        for cycle in 2..12 {
+            assert_eq!(
+                history[cycle].0,
+                history[cycle - 2].0,
+                "guest at cycle {cycle}"
+            );
+            assert!(
+                history[cycle].1 == history[cycle - 2].1,
+                "presented at cycle {cycle}"
+            );
+            assert_eq!(
+                history[cycle].2,
+                history[cycle - 2].2,
+                "stored ink at cycle {cycle}"
+            );
+        }
+    }
+
+
+
+    #[test]
+    fn scrolled_dimmed_text_is_not_dimmed_again() {
+        // ScrollRect by two pixels keeps the dimmed text on the same
+        // checkerboard phase, so painting gray again changes no guest pixel.
+        // A copied cell has no undimmed copy, so it must not be dimmed a
+        // second time: it either keeps what it showed or shows the guest's
+        // pixels.
+        const W: usize = DIM_PORT_W as usize;
+        const H: usize = DIM_PORT_H as usize;
+        const SCALE: usize = 4;
+        let palette: [[u8; 3]; 256] = std::array::from_fn(|i| [255 - i as u8; 3]);
+        let (mut d, mut cpu, mut bus, base, _) = text_on_presented_port(16, "oar: $30.00");
+        let rect = Rect {
+            top: 0,
+            left: 0,
+            bottom: H as i16,
+            right: W as i16,
+        };
+        d.pn_mode = 11;
+        d.pn_pat = GRAY;
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+        let rect_ptr = bus.alloc(8);
+        write_rect(&mut bus, rect_ptr, 0, 0, H as i16, W as i16);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 6, 2);
+        bus.write_long(TEST_SP + 8, rect_ptr);
+        assert!(d
+            .dispatch_quickdraw(true, 0x0EF, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        let scrolled = (
+            bus.read_bytes(base, W * H),
+            bus.outline_presentation_rgb().unwrap().2,
+        );
+        d.pn_mode = 11;
+        d.pn_pat = GRAY;
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+        let painted = (
+            bus.read_bytes(base, W * H),
+            bus.outline_presentation_rgb().unwrap().2,
+        );
+        assert_eq!(painted.0, scrolled.0, "guest pixels");
+        assert!(
+            scrolled.1.iter().any(|&value| value != 255),
+            "the text is shown"
+        );
+        for y in 0..H {
+            for x in 0..W {
+                let at = |i: usize| ((y * SCALE + i / SCALE) * W * SCALE + x * SCALE + i % SCALE) * 3;
+                let unchanged = (0..SCALE * SCALE).all(|i| painted.1[at(i)] == scrolled.1[at(i)]);
+                let pixel = palette[usize::from(painted.0[y * W + x])][0];
+                let plain = (0..SCALE * SCALE).all(|i| painted.1[at(i)] == pixel);
+                assert!(unchanged || plain, "guest pixel ({x}, {y}) dimmed again");
+            }
+        }
+    }
+
+
+    #[test]
+    fn dimming_text_over_blended_ink_shows_the_guest_pixels() {
+        // Red text drawn a pixel to the right of black text leaves edge
+        // samples whose ink lies over the black glyph's blend. Those cells
+        // are not dimmed from a copy (blends could nest a level deeper each
+        // time); they show the guest's pixels, and the rest of the text
+        // still dims.
+        const W: usize = DIM_PORT_W as usize;
+        const H: usize = DIM_PORT_H as usize;
+        const SCALE: usize = 4;
+        let palette: [[u8; 3]; 256] = std::array::from_fn(|i| [255 - i as u8; 3]);
+        let (mut d, mut cpu, mut bus, base, _) = text_on_presented_port(16, "oar: $30.00");
+        d.fg_color = (0xFFFF, 0, 0);
+        d.pn_loc = (16, 15);
+        for ch in "oar: $30.00".chars() {
+            d.draw_char(&mut cpu, &mut bus, ch);
+        }
+        let over_blend: Vec<bool> = (0..(W * H) as u32)
+            .map(|offset| bus.test_ink_over_blend(base + offset))
+            .collect();
+        let rect = Rect {
+            top: 0,
+            left: 0,
+            bottom: H as i16,
+            right: W as i16,
+        };
+        d.pn_mode = 11;
+        d.pn_pat = GRAY;
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+        let guest = bus.read_bytes(base, W * H);
+        let presented = bus.outline_presentation_rgb().unwrap().2;
+        let mut blended = 0;
+        let mut dimmed = 0;
+        for y in 0..H {
+            for x in 0..W {
+                let at = |i: usize| ((y * SCALE + i / SCALE) * W * SCALE + x * SCALE + i % SCALE) * 3;
+                let pixel = palette[usize::from(guest[y * W + x])][0];
+                let plain = (0..SCALE * SCALE).all(|i| presented[at(i)] == pixel);
+                if over_blend[y * W + x] {
+                    assert!(plain, "guest pixel ({x}, {y}) over blended ink");
+                    blended += 1;
+                } else if !plain {
+                    dimmed += 1;
+                }
+            }
+        }
+        assert!(blended > 0, "the second draw blends over the first");
+        assert!(dimmed > 0, "the rest of the text dims");
+    }
+
+    /// ScrollRect the whole dimming test port by (dh, dv).
+    fn scroll_dim_port(
+        d: &mut TrapDispatcher,
+        cpu: &mut super::super::test_helpers::MockCpu,
+        bus: &mut MacMemoryBus,
+        dh: i16,
+        dv: i16,
+        right: i16,
+    ) {
+        let rect_ptr = bus.alloc(8);
+        write_rect(bus, rect_ptr, 0, 0, DIM_PORT_H as i16, right);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, dv as u16);
+        bus.write_word(TEST_SP + 6, dh as u16);
+        bus.write_long(TEST_SP + 8, rect_ptr);
+        assert!(d.dispatch_quickdraw(true, 0x0EF, cpu, bus).unwrap().is_ok());
+    }
+
+    #[test]
+    fn odd_scroll_of_dimmed_text_then_gray_clears_it() {
+        // ScrollRect by an odd number of pixels flips the dimmed text onto
+        // the other checkerboard phase, so gray patBic then clears every
+        // text pixel. The presentation must clear too, including cells a
+        // scroll copies onto identical cells.
+        const W: usize = DIM_PORT_W as usize;
+        const H: usize = DIM_PORT_H as usize;
+        let rect = Rect {
+            top: 0,
+            left: 0,
+            bottom: H as i16,
+            right: W as i16,
+        };
+        for text in ["oar: $30.00", "lll III |||"] {
+            for (dh, dv) in [(1, 0), (0, 1), (-1, 0), (3, 0)] {
+                let (mut d, mut cpu, mut bus, base, _) = text_on_presented_port(16, text);
+                d.pn_mode = 11;
+                d.pn_pat = GRAY;
+                d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+                scroll_dim_port(&mut d, &mut cpu, &mut bus, dh, dv, W as i16);
+                d.pn_mode = 11;
+                d.pn_pat = GRAY;
+                d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+                let guest = bus.read_bytes(base, W * H);
+                assert!(
+                    guest.iter().all(|&pixel| pixel == 0),
+                    "{text:?} ({dh}, {dv}) guest"
+                );
+                let presented = bus.outline_presentation_rgb().unwrap().2;
+                let left = presented.iter().filter(|&&value| value != 255).count();
+                assert_eq!(left, 0, "{text:?} ({dh}, {dv}) presented values left");
+            }
+        }
+    }
+
+    #[test]
+    fn dissolving_dimmed_text_keeps_one_cleared_color() {
+        // 63 patBic paints, each clearing one more bit of the pattern tile
+        // to white: every sample ends at 1/64 of its color, and the stored
+        // ink stays as small as after the first paint.
+        const W: usize = DIM_PORT_W as usize;
+        const H: usize = DIM_PORT_H as usize;
+        let (mut d, mut cpu, mut bus, base, _) = text_on_presented_port(16, "oar: $30.00");
+        let before = bus.outline_presentation_rgb().unwrap().2;
+        let rect = Rect {
+            top: 0,
+            left: 0,
+            bottom: H as i16,
+            right: W as i16,
+        };
+        let nodes = |bus: &MacMemoryBus| -> usize {
+            (0..(W * H) as u32)
+                .map(|offset| bus.test_indexed_detail_nodes(base + offset))
+                .sum()
+        };
+        let mut first = 0;
+        for bit in 0..63u32 {
+            let mut pattern = [0u8; 8];
+            pattern[(bit / 8) as usize] = 0x80 >> (bit % 8);
+            d.pn_mode = 11;
+            d.pn_pat = pattern;
+            d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+            if bit == 0 {
+                first = nodes(&bus);
+            }
+        }
+        assert!(
+            nodes(&bus) <= first,
+            "stored ink grew from {first} to {}",
+            nodes(&bus)
+        );
+        let presented = bus.outline_presentation_rgb().unwrap().2;
+        let checked = assert_text_samples(&before, &presented, |original| {
+            (original + 255 * 63 + 32) / 64
+        });
+        assert!(checked > 0);
+    }
+
+    #[test]
+    fn copies_of_dimmed_text_stay_recognized_after_many_paints() {
+        // Text on the left is dimmed and scrolled two pixels (the same
+        // checkerboard phase), then other text is dissolved by 60 paints,
+        // which produce more dimmed cells than the screen has. Gray on the
+        // left again must still not dim the scrolled copies twice.
+        const W: usize = DIM_PORT_W as usize;
+        const H: usize = DIM_PORT_H as usize;
+        const SCALE: usize = 4;
+        let palette: [[u8; 3]; 256] = std::array::from_fn(|i| [255 - i as u8; 3]);
+        let (mut d, mut cpu, mut bus, base, _) = text_on_presented_port(16, "oar");
+        d.pn_loc = (16, 64);
+        for ch in "$30.00 $3".chars() {
+            d.draw_char(&mut cpu, &mut bus, ch);
+        }
+        let left = Rect {
+            top: 0,
+            left: 0,
+            bottom: H as i16,
+            right: 48,
+        };
+        let right = Rect {
+            top: 0,
+            left: 56,
+            bottom: H as i16,
+            right: W as i16,
+        };
+        d.pn_mode = 11;
+        d.pn_pat = GRAY;
+        d.draw_rect(&mut cpu, &mut bus, &left, ShapeOp::Paint);
+        scroll_dim_port(&mut d, &mut cpu, &mut bus, 2, 0, 48);
+        let scrolled = (
+            bus.read_bytes(base, W * H),
+            bus.outline_presentation_rgb().unwrap().2,
+        );
+        for bit in 0..60u32 {
+            let mut pattern = [0u8; 8];
+            pattern[(bit / 8) as usize] = 0x80 >> (bit % 8);
+            d.pn_pat = pattern;
+            d.draw_rect(&mut cpu, &mut bus, &right, ShapeOp::Paint);
+        }
+        d.pn_pat = GRAY;
+        d.draw_rect(&mut cpu, &mut bus, &left, ShapeOp::Paint);
+        let painted = (
+            bus.read_bytes(base, W * H),
+            bus.outline_presentation_rgb().unwrap().2,
+        );
+        for y in 0..H {
+            for x in 0..48 {
+                assert_eq!(
+                    painted.0[y * W + x],
+                    scrolled.0[y * W + x],
+                    "guest ({x}, {y})"
+                );
+                let at = |i: usize| ((y * SCALE + i / SCALE) * W * SCALE + x * SCALE + i % SCALE) * 3;
+                let unchanged = (0..SCALE * SCALE).all(|i| painted.1[at(i)] == scrolled.1[at(i)]);
+                let pixel = palette[usize::from(painted.0[y * W + x])][0];
+                let plain = (0..SCALE * SCALE).all(|i| painted.1[at(i)] == pixel);
+                assert!(unchanged || plain, "guest pixel ({x}, {y}) dimmed again");
+            }
+        }
+    }
+
+    #[test]
+    fn window_moved_by_an_odd_offset_then_gray_clears_dimmed_text() {
+        // Moving a window restores its saved pixels at the new position,
+        // skipping cells that are already identical. By an odd offset the
+        // dimmed text lands on the other checkerboard phase, so gray patBic
+        // then clears it in the guest, and the presentation must clear too,
+        // whether the pixels come back through the window restore or
+        // through CopyBits.
+        const W: usize = DIM_PORT_W as usize;
+        const H: usize = DIM_PORT_H as usize;
+        let rect = Rect {
+            top: 0,
+            left: 0,
+            bottom: H as i16,
+            right: W as i16,
+        };
+        for through_copybits in [false, true] {
+            for text in ["oar: $30.00", "lll III |||"] {
+                for (dh, dv) in [(1i16, 0i16), (0, 1), (3, 0)] {
+                    let (mut d, mut cpu, mut bus, base, _) = text_on_presented_port(16, text);
+                    d.pn_mode = 11;
+                    d.pn_pat = GRAY;
+                    d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+                    let saved = d
+                        .save_screen_rect_pixels(&bus, (0, 0, H as i16 - dv, W as i16 - dh))
+                        .unwrap();
+                    if through_copybits {
+                        let (width, height) = (saved.2 as usize, saved.3 as usize);
+                        for y in 0..height {
+                            for x in 0..width {
+                                let to = (y + dv as usize) * W + x + dh as usize;
+                                bus.copy_saved_pixel(base + to as u32, &saved.4, y * width + x, |i| i);
+                            }
+                        }
+                    } else {
+                        d.restore_screen_rect_pixels(&mut bus, dv, dh, saved.2, saved.3, &saved.4);
+                    }
+                    d.pn_mode = 11;
+                    d.pn_pat = GRAY;
+                    d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+                    let case = format!("{text:?} ({dh}, {dv}) through CopyBits {through_copybits}");
+                    let guest = bus.read_bytes(base, W * H);
+                    assert!(guest.iter().all(|&pixel| pixel == 0), "{case}: guest");
+                    let presented = bus.outline_presentation_rgb().unwrap().2;
+                    let left = presented.iter().filter(|&&value| value != 255).count();
+                    assert_eq!(left, 0, "{case}: presented values left");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fresh_text_copied_in_then_dimmed_dims_as_drawn() {
+        // Undimmed text copied onto the screen (from a buffer saved before
+        // anything was dimmed) is fresh text, even where a cell looks like
+        // some other cell's dimmed result: dimming it must match dimming
+        // the text as drawn.
+        const W: usize = DIM_PORT_W as usize;
+        const H: usize = DIM_PORT_H as usize;
+        let rect = Rect {
+            top: 0,
+            left: 0,
+            bottom: H as i16,
+            right: W as i16,
+        };
+        for text in ["oar: $30.00", "Open... Quit", "Print..."] {
+            let (mut d, mut cpu, mut bus, base, _) = text_on_presented_port(16, text);
+            let fresh = bus.save_pixel_bytes(base, W * H);
+            d.pn_mode = 11;
+            d.pn_pat = GRAY;
+            d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+            let once = (
+                bus.read_bytes(base, W * H),
+                bus.outline_presentation_rgb().unwrap().2,
+            );
+            for i in 0..W * H {
+                bus.copy_saved_pixel(base + i as u32, &fresh, i, |index| index);
+            }
+            d.pn_mode = 11;
+            d.pn_pat = GRAY;
+            d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+            let again = (
+                bus.read_bytes(base, W * H),
+                bus.outline_presentation_rgb().unwrap().2,
+            );
+            assert_eq!(again.0, once.0, "{text:?}: guest pixels");
+            let differing = again.1.iter().zip(&once.1).filter(|(a, b)| a != b).count();
+            assert_eq!(differing, 0, "{text:?}: presented values differing");
+        }
+    }
+
+    #[test]
+    fn dimmed_text_recolored_by_guest_code_keeps_its_outline() {
+        // Guest code recolors dimmed text in place (black to index 200, a
+        // byte loop the presentation follows), then the application dims
+        // it again. A recolor in place is not a copy of dimmed text, so
+        // the text keeps its outline and is dimmed from what it shows.
+        const W: usize = DIM_PORT_W as usize;
+        const H: usize = DIM_PORT_H as usize;
+        const SCALE: usize = 4;
+        let smooth_cells = |rgb: &[u8]| {
+            (0..W * H)
+                .filter(|&cell| {
+                    let (x, y) = (cell % W, cell / W);
+                    let at =
+                        |i: usize| ((y * SCALE + i / SCALE) * W * SCALE + x * SCALE + i % SCALE) * 3;
+                    (1..SCALE * SCALE).any(|i| rgb[at(i)] != rgb[at(0)])
+                })
+                .count()
+        };
+        let rect = Rect {
+            top: 0,
+            left: 0,
+            bottom: H as i16,
+            right: W as i16,
+        };
+        let (mut d, mut cpu, mut bus, base, _) = text_on_presented_port(16, "oar: $30.00");
+        d.pn_mode = 11;
+        d.pn_pat = GRAY;
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+        bus.begin_cpu_drawing();
+        for i in 0..W * H {
+            let address = base + i as u32;
+            let value = bus.read_byte(address);
+            bus.write_byte(address, if value == 255 { 200 } else { value });
+        }
+        bus.end_cpu_drawing(true);
+        let recolored = smooth_cells(&bus.outline_presentation_rgb().unwrap().2);
+        assert!(recolored > 0, "the recolor keeps the outline");
+        d.pn_mode = 11;
+        d.pn_pat = GRAY;
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+        let after = smooth_cells(&bus.outline_presentation_rgb().unwrap().2);
+        assert_eq!(
+            after, recolored,
+            "cells keeping their outline after dimming again"
+        );
+    }
+
+    #[test]
+    fn rows_restored_one_pixel_down_then_gray_clear() {
+        // Restoring saved rows one row down, a row at a time, flips the
+        // dimmed text's checkerboard phase, so gray then clears it, and the
+        // presentation must clear too, including cells the restore finds
+        // identical and skips.
+        const W: usize = DIM_PORT_W as usize;
+        const H: usize = DIM_PORT_H as usize;
+        let rect = Rect {
+            top: 0,
+            left: 0,
+            bottom: H as i16,
+            right: W as i16,
+        };
+        let (mut d, mut cpu, mut bus, base, _) = text_on_presented_port(16, "lll III |||");
+        d.pn_mode = 11;
+        d.pn_pat = GRAY;
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+        let rows: Vec<_> = (0..H)
+            .map(|y| bus.save_pixel_bytes(base + (y * W) as u32, W))
+            .collect();
+        for y in (0..H - 1).rev() {
+            bus.restore_saved_pixels(base + ((y + 1) * W) as u32, &rows[y], 0, W);
+        }
+        d.pn_mode = 11;
+        d.pn_pat = GRAY;
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+        let guest = bus.read_bytes(base, W * H);
+        assert!(guest.iter().all(|&pixel| pixel == 0), "guest");
+        let presented = bus.outline_presentation_rgb().unwrap().2;
+        let left = presented.iter().filter(|&&value| value != 255).count();
+        assert_eq!(left, 0, "presented values left");
+    }
+
     #[test]
     fn outline_detail_survives_copybits_scrollrect_and_invertrect() {
         let (mut d, mut cpu, mut bus) = setup_with_port();

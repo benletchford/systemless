@@ -1483,6 +1483,36 @@ impl super::TrapDispatcher {
     ) where
         F: Fn(i16, i16) -> u8,
     {
+        self.draw_generic_shape_pixels(
+            cpu,
+            bus,
+            r,
+            op,
+            full_rect_coverage,
+            shape_rows,
+            polygon_edges,
+            coverage_at,
+        );
+        // `draw_generic_shape_pixels` sets this for a partial-pattern patBic
+        // paint, and it lasts only for that shape.
+        if let Some(mut p) = bus.presentation.as_mut() {
+            p.dimming_text = None;
+        }
+    }
+
+    fn draw_generic_shape_pixels<C: CpuOps, F>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        r: &Rect,
+        op: ShapeOp,
+        full_rect_coverage: bool,
+        shape_rows: Option<super::quickdraw::RegionMembershipCache>,
+        polygon_edges: Option<Vec<[f32; 4]>>,
+        coverage_at: F,
+    ) where
+        F: Fn(i16, i16) -> u8,
+    {
         // HidePen decrements pn_vis below 0 to suppress ALL QuickDraw
         // drawing through StdRect / StdOval / StdRRect / StdLine /
         // StdText (frame/paint/erase/invert/fill + glyph) until the
@@ -1883,6 +1913,41 @@ impl super::TrapDispatcher {
         } else {
             None
         };
+
+        // A disabled pane is dimmed by painting it with a gray pattern in
+        // patBic, which clears the destination wherever the pattern has a
+        // bit (Inside Macintosh Volume I, I-157). The guest pixels follow
+        // that exactly. Presented text keeps its outline instead and is
+        // drawn at the strength the pattern leaves, so a stroke or a dot
+        // narrower than the pattern's cells does not vanish.
+        if pixel_size == 8
+            && pix_base == self.screen_mode.0
+            && matches!(op, ShapeOp::Paint)
+            && normalize_boolean_transfer_mode(self.pn_mode) == 3
+            && installed_raw_pixpat.is_none()
+            && generated_pen_rgb.is_none()
+        {
+            // The pattern is aligned to the port's local coordinates, and
+            // screen pixel (x, y) is local (x + left, y + top) of the port's
+            // bounds; record which screen pixels of each 8x8 tile it clears.
+            let mut cleared = 0u64;
+            for row in 0..8i16 {
+                for col in 0..8i16 {
+                    let pattern_row = effective_pn_pat[(row + bounds_top).rem_euclid(8) as usize];
+                    if pattern_row & (1 << (7 - (col + bounds_left).rem_euclid(8))) != 0 {
+                        cleared |= 1 << (row * 8 + col);
+                    }
+                }
+            }
+            if (1..64).contains(&cleared.count_ones()) {
+                if let Some(mut p) = bus.presentation.as_mut() {
+                    p.dimming_text = Some(crate::memory::presentation::DimmingPaint {
+                        background: bg_idx,
+                        cleared,
+                    });
+                }
+            }
+        }
 
         if (bus.quickdraw_gpu_renderer.prefers_precomputed_raster() || polygon_edges.is_some())
             && (full_rect_coverage || shape_rows.is_some() || polygon_edges.is_some())

@@ -415,14 +415,14 @@ pub(crate) struct OutlineGlyph {
 
 // Keep palette indexes through antialiasing so a CLUT change recolors existing
 // coverage without rasterizing the guest's one-bit text again.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Ink {
     foreground: u8,
     alpha: u32,
     background: IndexedColor,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum IndexedColor {
     Solid(u8),
     Mix(Box<IndexedColor>, Box<IndexedColor>, u32),
@@ -511,6 +511,9 @@ struct DetailCell {
     value: u8,
     indices: Vec<u8>,
     ink: HashMap<usize, Ink, BuildHasherDefault<SampleOffsetHasher>>,
+    /// Taken from a screen cell showing text dimmed by patBic paints (see
+    /// `DimmedCell`): a copy of it is not dimmed again.
+    dimmed: bool,
 }
 
 /// A snapshot cell copied with `map` applied to its value, indices and ink.
@@ -803,6 +806,8 @@ pub(crate) struct CopiedCell {
     inks: u8,
     /// The cell's ink, mapped, when none of it is blended.
     block: ink::CellInk,
+    /// See `DetailCell::dimmed`.
+    dimmed: bool,
 }
 
 /// The retained detail a row copy carries, reused between copies.
@@ -856,6 +861,7 @@ impl CopiedDetail {
                     indices,
                     inks: (self.inks.len() - first_ink) as u8,
                     block: ink::CellInk::default(),
+                    dimmed: cell.dimmed,
                 });
             }
             base += len;
@@ -927,6 +933,120 @@ struct ResolvedOutputCache {
     rgba_rows: Option<(ScreenMark, [[u8; 3]; 256])>,
 }
 
+/// A patBic paint with a pattern that is neither empty nor solid, as
+/// applications use to dim disabled text.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DimmingPaint {
+    /// The palette index the pattern clears to.
+    pub(crate) background: u8,
+    /// The pattern's bits in screen alignment: bit `(y % 8) * 8 + x % 8` is
+    /// set when the paint clears screen pixel `(x, y)`.
+    pub(crate) cleared: u64,
+}
+
+/// One cell's samples: each sample's index, and the ink of the samples
+/// that have it (most samples of a text cell have none).
+#[derive(Clone, Debug)]
+struct CellSamples {
+    indices: [u8; TILE_SAMPLES],
+    ink: Vec<(u8, Ink)>,
+}
+
+/// A screen text cell dimmed by patBic paints with partial patterns.
+///
+/// `original` is the cell before the first of them. `cleared` lists, for
+/// each color the paints cleared to, the bits of the 8x8 pattern tile (in
+/// screen alignment, as `DimmingPaint::cleared`) that were last cleared to
+/// it; the masks are disjoint. Each paint redraws the cell from `original`:
+/// every sample shows its undimmed color at the share of the tile no paint
+/// has cleared, and each cleared color at the share it holds, which is how
+/// the guest's pixels average over the tile. So a repeated paint changes
+/// nothing, paints that together clear every bit leave only the cleared
+/// colors, and paints that clear to different colors keep each.
+///
+/// The record is dropped whenever the cell is drawn on, stored to or given
+/// copied detail; InvertRect recolors it with the cell.
+#[derive(Clone, Debug)]
+struct DimmedCell {
+    original: CellSamples,
+    cleared: Vec<(u8, u64)>,
+}
+
+impl DimmedCell {
+    /// Record a paint that clears the bits of `mask` to `background`.
+    /// One entry per color, so blends of the cleared colors stay as
+    /// shallow as the number of colors.
+    fn clear(&mut self, background: u8, mut mask: u64) {
+        for (_, bits) in &mut self.cleared {
+            *bits &= !mask;
+        }
+        if let Some(same) = self
+            .cleared
+            .iter()
+            .position(|&(index, _)| index == background)
+        {
+            mask |= self.cleared.remove(same).1;
+        }
+        self.cleared.retain(|&(_, bits)| bits != 0);
+        self.cleared.push((background, mask));
+    }
+
+    fn coverage(&self) -> u64 {
+        self.cleared
+            .iter()
+            .fold(0, |union, &(_, bits)| union | bits)
+    }
+
+    /// The cleared colors mixed in proportion to their bits: a solid index
+    /// for one color, a blend for several.
+    fn cleared_color(&self) -> IndexedColor {
+        let mut layers = self.cleared.iter().rev();
+        let &(last, bits) = layers.next().expect("a dimmed cell has a cleared color");
+        let mut color = IndexedColor::Solid(last);
+        let mut total = bits.count_ones();
+        for &(index, bits) in layers {
+            let count = bits.count_ones();
+            total += count;
+            // `color` holds the later layers; this one takes count/total.
+            let weight = (255 * count + total / 2) / total;
+            color = IndexedColor::Mix(
+                Box::new(IndexedColor::Solid(index)),
+                Box::new(color),
+                weight,
+            );
+        }
+        color
+    }
+}
+
+/// `held`, which shows its foreground at `held.alpha` over its background,
+/// kept at `share` of its color over `cleared`, the color the paints cleared
+/// to: the foreground keeps `alpha × share`, and the old background takes the
+/// rest of the share inside a blend with `cleared`, so the sample shows
+/// exactly its undimmed color mixed with `cleared` in that proportion.
+fn dimmed_ink(held: &Ink, cleared: &IndexedColor, share: u32) -> Ink {
+    let alpha = (held.alpha * share + 127) / 255;
+    let background = if held.background == *cleared {
+        cleared.clone()
+    } else {
+        // Of what the foreground leaves, (255 - alpha), the old background
+        // takes share × (255 - held.alpha). `share` is below 255, so `rest`
+        // is never zero.
+        let rest = 255 - alpha;
+        let weight = ((share * (255 - held.alpha) + rest / 2) / rest).min(255);
+        IndexedColor::Mix(
+            Box::new(held.background.clone()),
+            Box::new(cleared.clone()),
+            weight,
+        )
+    };
+    Ink {
+        foreground: held.foreground,
+        alpha,
+        background,
+    }
+}
+
 pub(crate) struct Presentation {
     revision: u64,
     /// Distinguishes presentation objects, so a screen mark taken on one is
@@ -989,6 +1109,19 @@ pub(crate) struct Presentation {
     offscreen_run_ink: OffscreenRunInk,
     in_text_run: bool,
     pub erasing_text: bool,
+    /// A partial-pattern patBic paint is in progress (see `dim_text_cell`).
+    pub(crate) dimming_text: Option<DimmingPaint>,
+    /// Screen text cells under dimmed text (see `DimmedCell`).
+    dim_coverage: HashMap<usize, DimmedCell>,
+    /// Screen cells whose detail arrived by a copy of dimmed text
+    /// (`DetailCell::dimmed`), until they are drawn on or stored to:
+    /// dimming them again would dim them twice.
+    copied_dimmed: HashSet<usize>,
+    /// One bit per screen cell, row by row (`dimmed_words_per_row` words
+    /// each): set while the cell shows dimmed text (`shows_dimmed_text`), so
+    /// a restore can skip spans without any.
+    dimmed_cells: Vec<u64>,
+    dimmed_words_per_row: usize,
     /// Stores now come from guest code rather than from a Toolbox call
     /// Systemless performs. Guest blitters read, mask and write back every
     /// byte they compose, so an offscreen store of a byte's own value keeps
@@ -1195,6 +1328,9 @@ impl Presentation {
         }
         for (address, mut detail) in recolor.detail {
             let cell = Arc::make_mut(&mut detail);
+            // Guest code recoloring a cell in place does not copy dimmed
+            // text: the cell is dimmed again from what it shows.
+            cell.dimmed = false;
             let mut complete = true;
             let mut map = |index: u8| {
                 let mapped = recolor.map[index as usize];
@@ -1641,12 +1777,17 @@ impl Presentation {
         }
         let index = (y * self.width + x) as usize;
         if let Some(cell) = &self.detail_cache.borrow()[index] {
-            return Some(cell.clone());
+            // A snapshot cached from a copy can carry another cell's dimmed
+            // mark (see `DetailCell::dimmed`).
+            if cell.dimmed == self.shows_dimmed_text(index) {
+                return Some(cell.clone());
+            }
         }
         let mut cell = DetailCell {
             value: self.guest_values[(y * self.width + x) as usize] as u8,
             indices: Vec::new(),
             ink: HashMap::default(),
+            dimmed: self.shows_dimmed_text(index),
         };
         let samples = self.samples.get(index);
         let len = (self.scale * self.scale) as usize;
@@ -2055,8 +2196,9 @@ impl Presentation {
             self.finish_cpu_recolor();
         }
         if self.matches_detail(address, Some(cell)) {
-            if self.position(address).is_none() {
-                self.offscreen.retag(address);
+            match self.position(address) {
+                Some((x, y)) => self.note_copied_cell((y * self.width + x) as usize, cell.dimmed),
+                None => self.offscreen.retag(address),
             }
             return;
         }
@@ -2102,6 +2244,7 @@ impl Presentation {
             };
         }
         self.ink_mask[index] = mask;
+        self.note_copied_cell(index, cell.dimmed);
     }
 
     pub fn glyph_bounds(&self) -> Option<(i32, i32, i32, i32)> {
@@ -2157,6 +2300,7 @@ impl Presentation {
         self.touch_screen(x, y);
         self.detail_cache.get_mut()[(y * self.width + x) as usize] = None;
         let cell = (y * self.width + x) as usize;
+        self.forget_dim_coverage(cell);
         if !self.text_cells[cell] {
             let index = self.guest_values[cell] as u8;
             let color = self.palette_at(x)[index as usize];
@@ -2267,6 +2411,49 @@ impl Presentation {
             return;
         };
         let cell = (y * self.width + x) as usize;
+        if let Some(paint) = self.dimming_text {
+            if self.text_cells[cell] && self.glyph.is_none() && self.depth == 8 {
+                self.finish_cpu_recolor();
+                let was = self.shows_dimmed_text(cell);
+                let taken = self.take_dim_record(cell);
+                self.sync_dimmed_row(cell, was);
+                let record = match taken {
+                    Some(record) => Some(record),
+                    // A copy of dimmed text: dimming it again would dim it
+                    // twice.
+                    None if self.copied_dimmed.contains(&cell) => None,
+                    None => {
+                        let original = self.cell_samples(cell);
+                        // Ink over a blend (text over text, or text an
+                        // earlier paint dimmed and something else then
+                        // changed) is not dimmed again, so blends never
+                        // nest deeper than the text drawn.
+                        let blended = original
+                            .ink
+                            .iter()
+                            .any(|(_, held)| matches!(held.background, IndexedColor::Mix(..)));
+                        (!blended).then(|| DimmedCell {
+                            original,
+                            cleared: Vec::new(),
+                        })
+                    }
+                };
+                if let Some(mut record) = record {
+                    record.clear(paint.background, paint.cleared);
+                    if record.coverage().count_ones() < 64 {
+                        self.dim_text_cell(cell, x, y, value, paint.background, &record);
+                        let was = self.shows_dimmed_text(cell);
+                        self.dim_coverage.insert(cell, record);
+                        self.sync_dimmed_row(cell, was);
+                        return;
+                    }
+                }
+                // Either the paints so far have cleared every bit of the
+                // pattern tile, so no text is left in the guest, or the cell
+                // cannot be redrawn from an undimmed copy: store the plain
+                // guest pixel below, as before this treatment.
+            }
+        }
         if self.cpu_drawing && self.glyph.is_none() && !self.erasing_text {
             self.observe_cpu_recolor(address, self.guest_values[cell] as u8, value);
         } else {
@@ -2303,11 +2490,220 @@ impl Presentation {
         self.clear_text_cell(cell, x, value);
     }
 
+    /// New text or a plain pixel in `cell` starts with no dimming paints
+    /// behind it.
+    fn forget_dim_coverage(&mut self, cell: usize) {
+        if !self.has_dimmed_text() {
+            return;
+        }
+        let was = self.shows_dimmed_text(cell);
+        self.take_dim_record(cell);
+        self.copied_dimmed.remove(&cell);
+        self.sync_dimmed_row(cell, was);
+    }
+
+    /// Keep `dimmed_cells` in step after `cell`'s dimmed state may have
+    /// changed from `was`.
+    fn sync_dimmed_row(&mut self, cell: usize, was: bool) {
+        let now = self.shows_dimmed_text(cell);
+        if now != was {
+            let width = self.width as usize;
+            let (y, x) = (cell / width, cell % width);
+            let word = &mut self.dimmed_cells[y * self.dimmed_words_per_row + x / 64];
+            *word ^= 1 << (x % 64);
+        }
+    }
+
+    /// Whether any screen cell among the `len` bytes from `address` shows
+    /// dimmed text.
+    pub(crate) fn has_dimmed_text_in(&self, address: u32, len: usize) -> bool {
+        if !self.has_dimmed_text() || len == 0 {
+            return false;
+        }
+        let Some((x0, y0)) = self.position(address) else {
+            return false;
+        };
+        let (x1, y1) = self
+            .position(address + len as u32 - 1)
+            .unwrap_or((self.width - 1, self.height - 1));
+        let width = self.width as usize;
+        (y0..=y1).any(|y| {
+            let from = if y == y0 { x0 as usize } else { 0 };
+            let to = if y == y1 { x1 as usize } else { width - 1 };
+            let row = &self.dimmed_cells[y as usize * self.dimmed_words_per_row..];
+            (from / 64..=to / 64).any(|w| {
+                let low = if w == from / 64 { from % 64 } else { 0 };
+                let high = if w == to / 64 { to % 64 } else { 63 };
+                let span = (u64::MAX >> (63 - high)) & (u64::MAX << low);
+                row[w] & span != 0
+            })
+        })
+    }
+
+    /// Whether screen cell `cell` shows text dimmed by patBic paints.
+    fn shows_dimmed_text(&self, cell: usize) -> bool {
+        self.dim_coverage.contains_key(&cell) || self.copied_dimmed.contains(&cell)
+    }
+
+    /// Whether any screen cell shows dimmed text.
+    pub(crate) fn has_dimmed_text(&self) -> bool {
+        !self.dim_coverage.is_empty() || !self.copied_dimmed.is_empty()
+    }
+
+    /// Screen cell `cell` has just been given copied detail, changed or
+    /// not, `dimmed` if it was taken from dimmed text: its own dimming
+    /// record no longer describes it.
+    fn note_copied_cell(&mut self, cell: usize, dimmed: bool) {
+        if !dimmed && !self.has_dimmed_text() {
+            return;
+        }
+        let recorded = self.dim_coverage.contains_key(&cell);
+        let copied = self.copied_dimmed.contains(&cell);
+        if !recorded && copied == dimmed {
+            return;
+        }
+        let was = recorded || copied;
+        self.take_dim_record(cell);
+        if dimmed {
+            self.copied_dimmed.insert(cell);
+        } else {
+            self.copied_dimmed.remove(&cell);
+        }
+        self.detail_cache.get_mut()[cell] = None;
+        self.sync_dimmed_row(cell, was);
+    }
+
+    /// `note_copied_cell` for the screen byte at `address`; nothing for an
+    /// address off the screen.
+    pub(crate) fn note_copied_detail(&mut self, address: u32, dimmed: bool) {
+        if let Some((x, y)) = self.position(address) {
+            self.note_copied_cell((y * self.width + x) as usize, dimmed);
+        }
+    }
+
+    /// Take the dimming record of the screen cell at `address` before the
+    /// cell is recolored in place (see `MacMemoryBus::map_screen_byte`).
+    fn take_current_dim_record(&mut self, address: u32) -> Option<(usize, DimmedCell)> {
+        if self.dim_coverage.is_empty() {
+            return None;
+        }
+        let (x, y) = self.position(address)?;
+        let cell = (y * self.width + x) as usize;
+        let was = self.shows_dimmed_text(cell);
+        let record = self.take_dim_record(cell);
+        self.sync_dimmed_row(cell, was);
+        Some((cell, record?))
+    }
+
+    /// Give `cell`, just recolored in place by `map`, its dimming record
+    /// recolored the same way, so a later paint dims the recolored text
+    /// and keeps the recolored cleared colors, as the guest's pixels do.
+    fn restore_mapped_dim_record(
+        &mut self,
+        cell: usize,
+        mut record: DimmedCell,
+        map: &mut impl FnMut(u8) -> u8,
+    ) {
+        for index in &mut record.original.indices {
+            *index = map(*index);
+        }
+        for (_, held) in &mut record.original.ink {
+            held.foreground = map(held.foreground);
+            held.background.map(map);
+        }
+        for (index, _) in &mut record.cleared {
+            *index = map(*index);
+        }
+        let was = self.shows_dimmed_text(cell);
+        self.copied_dimmed.remove(&cell);
+        self.detail_cache.get_mut()[cell] = None;
+        self.dim_coverage.insert(cell, record);
+        self.sync_dimmed_row(cell, was);
+    }
+
+    /// Remove and return `cell`'s dimming record.
+    fn take_dim_record(&mut self, cell: usize) -> Option<DimmedCell> {
+        if self.dim_coverage.is_empty() {
+            return None;
+        }
+        let record = self.dim_coverage.remove(&cell)?;
+        self.detail_cache.get_mut()[cell] = None;
+        Some(record)
+    }
+
+    /// The samples and ink of screen cell `cell`.
+    fn cell_samples(&mut self, cell: usize) -> CellSamples {
+        let len = (self.scale * self.scale) as usize;
+        let (samples, ink) = self.samples.get_mut_with_ink(cell);
+        let ink = ink.view();
+        let mut indices = [0; TILE_SAMPLES];
+        indices[..len].copy_from_slice(&samples.indices[..len]);
+        CellSamples {
+            indices,
+            ink: (0..len)
+                .filter_map(|i| ink.get(i).map(|held| (i as u8, held)))
+                .collect(),
+        }
+    }
+
+    /// Store `value` in text cell `cell` under a patBic paint with a
+    /// partial pattern, keeping its outline. The pattern clears whole guest
+    /// pixels, which can remove every pixel of a stroke or dot narrower than
+    /// its cells; the presented cell is instead `dimmed.original` with each
+    /// sample mixed with the cleared colors in the proportions the paints
+    /// so far leave (see `DimmedCell`).
+    fn dim_text_cell(
+        &mut self,
+        cell: usize,
+        x: u32,
+        y: u32,
+        value: u8,
+        background: u8,
+        dimmed: &DimmedCell,
+    ) {
+        self.detail_cache.get_mut()[cell] = None;
+        self.touch_screen(x, y);
+        self.changed(true);
+        self.guest_values[cell] = u16::from(value);
+        let left = 64 - dimmed.coverage().count_ones();
+        let share = (255 * left + 32) / 64;
+        let cleared = dimmed.cleared_color();
+        let palette = &self.palette;
+        let (samples, mut ink) = self.samples.get_mut_with_ink(cell);
+        let mut mask = 0u16;
+        let original = &dimmed.original;
+        let mut held_ink = original.ink.iter().peekable();
+        for i in 0..(self.scale * self.scale) as usize {
+            let index = original.indices[i];
+            let held = match held_ink.next_if(|(sample, _)| usize::from(*sample) == i) {
+                Some((_, held)) => dimmed_ink(held, &cleared, share),
+                None => Ink {
+                    foreground: index,
+                    alpha: share,
+                    background: cleared.clone(),
+                },
+            };
+            if held.background == IndexedColor::Solid(held.foreground) {
+                // The sample's color is the one it is cleared to.
+                samples.rgb[i] = palette[usize::from(held.foreground)];
+                samples.indices[i] = held.foreground;
+                ink.remove(i);
+                continue;
+            }
+            samples.indices[i] = background;
+            samples.rgb[i] = held.rgb(palette);
+            ink.set(i, held);
+            mask |= 1 << i;
+        }
+        self.ink_mask[cell] = mask;
+    }
+
     /// Replace the text at screen cell `cell` (column `x`) with plain
     /// `value`: the text half of `write`, shared with
     /// `sync_screen_row_over_text`.
     fn clear_text_cell(&mut self, cell: usize, x: u32, value: u8) {
         self.detail_cache.get_mut()[cell] = None;
+        self.forget_dim_coverage(cell);
         Self::set_text_cell(
             &mut self.text_cells,
             &mut self.text_cell_count,
@@ -2358,6 +2754,7 @@ impl Presentation {
             && self.cpu_recolor.is_none()
             && self.glyph.is_none()
             && !self.erasing_text
+            && self.dimming_text.is_none()
             && self.run_ink.is_empty()
             && self.screen_row_span(address, len).is_some()
     }
@@ -2506,6 +2903,9 @@ impl Presentation {
                     indices: mapped,
                     inks: (copied.inks.len() - first) as u8,
                     block,
+                    // Offscreen detail does not keep `DetailCell::dimmed`;
+                    // screen cells set it below.
+                    dimmed: false,
                 });
             };
         let samples = (self.scale * self.scale) as usize;
@@ -2522,6 +2922,11 @@ impl Presentation {
                                 &self.samples.get(cell).indices[..samples],
                                 self.samples.ink(cell),
                             );
+                            if self.shows_dimmed_text(cell) {
+                                if let Some(pushed) = copied.cells.last_mut() {
+                                    pushed.dimmed = true;
+                                }
+                            }
                         }
                     }
                 }
@@ -2663,6 +3068,7 @@ impl Presentation {
                     self.samples.ink(cell).block().same_as(&copied.block)
                 }
             {
+                self.note_copied_cell(cell, copied.dimmed);
                 continue;
             }
             self.changed(true);
@@ -2703,6 +3109,7 @@ impl Presentation {
                 }
             }
             self.ink_mask[cell] = mask;
+            self.note_copied_cell(cell, copied.dimmed);
         }
     }
 
@@ -3497,6 +3904,19 @@ impl MacMemoryBus {
             .is_some_and(|p| p.detail(address).is_some())
     }
 
+    /// Whether any ink of the cell at `address` lies over a blend.
+    #[cfg(test)]
+    pub(crate) fn test_ink_over_blend(&self, address: u32) -> bool {
+        self.presentation
+            .as_ref()
+            .and_then(|p| p.detail(address))
+            .is_some_and(|cell| {
+                cell.ink
+                    .values()
+                    .any(|ink| matches!(ink.background, IndexedColor::Mix(..)))
+            })
+    }
+
     #[cfg(test)]
     pub(crate) fn test_indexed_detail_nodes(&self, address: u32) -> usize {
         fn count(color: &IndexedColor) -> usize {
@@ -3532,6 +3952,7 @@ impl MacMemoryBus {
             value,
             indices: vec![value; (scale * scale) as usize],
             ink: HashMap::default(),
+            dimmed: src.is_some_and(|cell| cell.dimmed),
         };
         let color = |cell: Option<&DetailCell>, i: usize, fallback| {
             cell.map_or(IndexedColor::Solid(fallback), |cell| {
@@ -3772,6 +4193,17 @@ impl MacMemoryBus {
                     })
             })
         {
+            // Identical detail is still a copy: a cell restored from dimmed
+            // text must not keep its own record (see `note_copied_cell`).
+            if let Some(mut p) = self.presentation.as_mut() {
+                if p.has_dimmed_text_in(address, end - offset) {
+                    for (&i, cell) in pixels.detail.iter() {
+                        if (offset..end).contains(&i) {
+                            p.note_copied_detail(address + (i - offset) as u32, cell.dimmed);
+                        }
+                    }
+                }
+            }
             return;
         }
         let plain_at = |i: usize| {
@@ -3810,6 +4242,9 @@ impl MacMemoryBus {
                     .as_ref()
                     .is_some_and(|p| p.matches_detail(dst, detail))
             {
+                if let (Some(cell), Some(mut p)) = (detail, self.presentation.as_mut()) {
+                    p.note_copied_detail(dst, cell.dimmed);
+                }
                 continue;
             }
             self.write_byte(dst, value);
@@ -3824,6 +4259,10 @@ impl MacMemoryBus {
     /// Apply the same indexed operation to each physical sample, retaining coverage.
     pub(crate) fn map_screen_byte(&mut self, address: u32, mut map: impl Fn(u8) -> u8) {
         let mut cell = self.presentation.as_ref().and_then(|p| p.detail(address));
+        let dimmed = self
+            .presentation
+            .as_mut()
+            .and_then(|mut p| p.take_current_dim_record(address));
         let value = map(self.read_byte(address));
         self.write_byte(address, value);
         if let Some(cell) = &mut cell {
@@ -3838,6 +4277,9 @@ impl MacMemoryBus {
             }
             if let Some(mut p) = self.presentation.as_mut() {
                 p.put_detail(address, cell);
+                if let Some((index, record)) = dimmed {
+                    p.restore_mapped_dim_record(index, record, &mut map);
+                }
             }
         }
     }
@@ -4174,6 +4616,11 @@ impl MacMemoryBus {
             offscreen_run_ink: OffscreenRunInk::default(),
             in_text_run: false,
             erasing_text: false,
+            dimming_text: None,
+            dim_coverage: HashMap::new(),
+            copied_dimmed: HashSet::new(),
+            dimmed_cells: vec![0; height as usize * (width as usize).div_ceil(64)],
+            dimmed_words_per_row: (width as usize).div_ceil(64),
             guest_stores: false,
             glyph: None,
             glyph_count: 0,
