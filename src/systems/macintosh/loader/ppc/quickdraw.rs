@@ -4378,9 +4378,11 @@ pub(crate) fn ppc_sync_gworld_pixel_state_mirror(
     pixmap_handle: u32,
     state: u32,
 ) {
-    if let Some(record) = gworlds
+    // Ports can share one PixMapHandle (for example, the screen's), so every
+    // matching record must see the transition before the signature is recorded.
+    for record in gworlds
         .iter_mut()
-        .find(|record| record.pixmap_handle == pixmap_handle)
+        .filter(|record| record.pixmap_handle == pixmap_handle)
     {
         record.pixels_locked = state & PPC_PIXELS_LOCKED != 0;
         record.pixels_no_purge = state & PPC_PIXELS_PURGEABLE == 0;

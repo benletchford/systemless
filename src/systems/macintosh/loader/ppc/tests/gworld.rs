@@ -3124,6 +3124,19 @@ fn mirror_sync_skips_redundant_registry_scans_across_lock_unlock_and_detects_pro
     ppc_sync_gworld_pixel_state_mirrors(&mut gworlds, &states);
     assert_eq!(scans(), before + 2);
     assert!(gworlds[1].pixels_locked && !gworlds[1].pixels_no_purge);
+
+    // Two ports can share one PixMapHandle. A transition through either must
+    // reach both mirrors before the synced signature lets the next boundary
+    // skip its scan.
+    let mut shared = gworlds[0];
+    shared.port += 0x100;
+    gworlds.push(shared);
+    ppc_sync_gworld_pixel_state_mirrors(&mut gworlds, &states);
+    assert!(!gworlds[0].pixels_locked && !gworlds[2].pixels_locked);
+    assert_eq!(ppc_lock_pixels(&mut gworlds, &states, 0x10), 1);
+    ppc_sync_gworld_pixel_state_mirrors(&mut gworlds, &states);
+    assert!(gworlds[0].pixels_locked);
+    assert!(gworlds[2].pixels_locked);
 }
 
 #[test]
