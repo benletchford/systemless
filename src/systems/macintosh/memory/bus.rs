@@ -4288,6 +4288,8 @@ impl MemoryBus for MacMemoryBus {
     /// trigger; same for the FB-write tracer.
     #[inline]
     fn write_bytes(&mut self, address: u32, data: &[u8]) {
+        #[cfg(test)]
+        crate::memory::write_log::record(address, data.len());
         if self.route(address, data.len()) != GuestMemoryRoute::Flat {
             for (offset, byte) in data.iter().copied().enumerate() {
                 self.write_byte(address.wrapping_add(offset as u32), byte);

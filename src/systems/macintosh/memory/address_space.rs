@@ -2791,7 +2791,7 @@ pub(crate) mod write_log {
         LOG.with(|log| log.borrow_mut().take().unwrap_or_default())
     }
 
-    pub(super) fn record(address: u32, len: usize) {
+    pub(crate) fn record(address: u32, len: usize) {
         LOG.with(|log| {
             if let Some(log) = log.borrow_mut().as_mut() {
                 log.push((address, len));

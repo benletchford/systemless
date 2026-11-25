@@ -717,7 +717,7 @@ fn apply_boolean_transfer_32(
 }
 
 impl super::TrapDispatcher {
-    pub(super) fn draw_rect<C: CpuOps>(
+    pub(crate) fn draw_rect<C: CpuOps>(
         &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
@@ -2042,17 +2042,52 @@ impl super::TrapDispatcher {
                     let dx = (left - bounds_left) as u32;
                     let width = (right - left) as u32;
                     if dx < pix_row_bytes && width <= pix_row_bytes.saturating_sub(dx) {
-                        let row = vec![solid_fill_idx.unwrap_or(0); width as usize];
-                        for y in top..bottom {
-                            let dy = (y - bounds_top) as u32;
-                            let addr = pix_base + dy * pix_row_bytes + dx;
-                            if invert_rows {
+                        if invert_rows {
+                            for y in top..bottom {
+                                let dy = (y - bounds_top) as u32;
+                                let addr = pix_base + dy * pix_row_bytes + dx;
                                 for offset in 0..width {
                                     bus.invert_screen_byte(addr + offset);
                                 }
-                            } else {
-                                bus.write_bytes(addr, &row);
                             }
+                        } else if let Some(fill_idx) = solid_fill_idx {
+                            use crate::quickdraw::raster::paint::{
+                                paint_rect, ClipRows, Depth, DrawOutcome, Ink, Surface,
+                                TransferMode,
+                            };
+                            let surface = Surface {
+                                base: pix_base,
+                                row_bytes: pix_row_bytes,
+                                depth: Depth::D8,
+                                bounds: Rect {
+                                    top: bounds_top,
+                                    left: bounds_left,
+                                    bottom: bounds_bottom,
+                                    right: bounds_right,
+                                },
+                            };
+                            let clip = ClipRows::rectangular(Rect {
+                                top: clip_top,
+                                left: clip_left,
+                                bottom: clip_bottom,
+                                right: clip_right,
+                            });
+                            let ink = Ink {
+                                fg: u32::from(fill_idx),
+                                bg: u32::from(fill_idx),
+                                pattern: [0xFF; 8],
+                                mode: TransferMode::PatCopy,
+                                pat_origin: (0, 0),
+                            };
+                            let outcome = paint_rect(
+                                bus,
+                                &surface,
+                                &clip,
+                                &ink,
+                                *r,
+                                &mut self.raster_scratch,
+                            );
+                            debug_assert!(matches!(outcome, DrawOutcome::Drawn { .. }));
                         }
                         let screen_rect = (
                             top.saturating_sub(bounds_top),

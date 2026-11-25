@@ -2444,6 +2444,8 @@ pub struct TrapDispatcher {
     pub(crate) dialog_popup_candidate_items: HashSet<(u32, i16)>,
     /// Process-owned desk scrap shared by classic and native gateways.
     pub(crate) scrap: SharedProcessScrapState,
+    /// Reusable row-expansion scratch for the shared QuickDraw raster core.
+    pub(crate) raster_scratch: Vec<u8>,
     /// Most recent pack ID passed to InitPack.
     /// Kept as lightweight bookkeeping for future pack-specific heuristics.
     pub last_init_pack_id: Option<i16>,
@@ -4343,6 +4345,7 @@ impl TrapDispatcher {
             dialog_popup_original_rects: HashMap::default(),
             dialog_popup_candidate_items: HashSet::default(),
             scrap: SharedProcessScrapState::default(),
+            raster_scratch: Vec::new(),
             last_init_pack_id: None,
         });
         dispatcher.ensure_vfs_directory("System Folder");

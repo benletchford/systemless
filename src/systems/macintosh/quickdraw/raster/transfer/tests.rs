@@ -85,3 +85,21 @@ fn equal_pattern_rows_share_one_prepared_row() {
     PatCopyRows::new(&mut scratch, &mixed, 0, 10, 1);
     assert_eq!(scratch.len(), 10 * 8);
 }
+
+#[test]
+fn solid_byte_patterns_populate_single_slot_and_reuse_scratch() {
+    let mut scratch = Vec::with_capacity(64);
+    let initial_ptr = scratch.as_ptr();
+    let initial_cap = scratch.capacity();
+
+    for (pattern, expected) in [([0xFF; 8], 0xB2u8), ([0x00; 8], 0x3Du8)] {
+        let solid = ink(pattern, (5, -3));
+        let mut rows = PatCopyRows::new(&mut scratch, &solid, -11, 29, 1);
+        assert_eq!(rows.built, 1);
+        for r in 0..8 {
+            assert_eq!(rows.row(r), &[expected; 29]);
+        }
+        assert_eq!(scratch.as_ptr(), initial_ptr);
+        assert_eq!(scratch.capacity(), initial_cap);
+    }
+}
