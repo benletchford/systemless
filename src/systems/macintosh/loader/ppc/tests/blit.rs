@@ -5316,3 +5316,50 @@ fn copy_bits_into_the_current_port_clips_to_vis_and_clip_regions() {
     assert_eq!(run(true), [BLUE, BLUE, RED, RED, RED, BLUE]);
     assert_eq!(run(false), [RED; 6]);
 }
+
+#[test]
+fn masked_src_copy_skips_unmapped_pixels_and_transfers_readable_pixels() {
+    const SRC: u32 = 0x7000_0000;
+    let records = PPC_HEAP_BASE + 0x18000;
+    let destination = records + 0x140;
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+    loaded.memory.add_region(records, vec![0; 0x200]);
+    loaded.memory.add_region(SRC, vec![0x12, 0x34]);
+    loaded.memory.add_region(SRC + 6, vec![0x56, 0x78]);
+    for (addr, pixels) in [(records, SRC), (records + 0x40, destination)] {
+        ppc_write_pixmap(&mut loaded.memory, addr, pixels, 8, 0, 0, 1, 4, 16).unwrap();
+    }
+    let rect = records + 0x80;
+    let handle = records + 0xa0;
+    ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 4).unwrap();
+    loaded.memory.write_u32_be(handle, handle + 8).unwrap();
+    for endpoints in [
+        &[][..],
+        &[0, 0, 1, 2, 4, i16::MAX, 1, 0, 1, 2, 4, i16::MAX, i16::MAX][..],
+    ] {
+        let storage = crate::trap::test_helpers::region_storage_bytes((0, 0, 1, 4), endpoints);
+        loaded.memory.write_bytes(handle + 8, &storage).unwrap();
+        loaded.memory.write_bytes(destination, &[0xaa; 8]).unwrap();
+        loaded.cpu.gpr[3..9].copy_from_slice(&[records, records + 0x40, rect, rect, 0, handle]);
+        assert!(ppc_copy_bits(
+            &mut loaded.cpu,
+            &mut loaded.memory,
+            &[],
+            0,
+            0,
+            &loaded.toolbox_startup,
+            &[[0; 3]; 256],
+            PPC_RGB_BLACK,
+            None,
+            PPC_RGB_WHITE,
+            None,
+            PPC_RGB_BLACK,
+        ));
+        let mut actual = [0; 8];
+        loaded
+            .memory
+            .read_bytes_into(destination, &mut actual)
+            .unwrap();
+        assert_eq!(actual, [0x12, 0x34, 0xaa, 0xaa, 0xaa, 0xaa, 0x56, 0x78]);
+    }
+}

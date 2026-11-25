@@ -1979,15 +1979,30 @@ impl GuestAddressSpace {
         if rows.is_empty() || row_len == 0 {
             return false;
         }
-        if !rows.iter().all(|&(_, destination)| self.plain_writable(destination, row_len)) {
+        let spans: Vec<(u32, u32, usize)> = rows
+            .iter()
+            .map(|&(source, destination)| (source, destination, row_len))
+            .collect();
+        self.copy_detail_spans(&spans, pixels, palette)
+    }
+
+    pub(crate) fn copy_detail_spans(
+        &mut self,
+        spans: &[(u32, u32, usize)],
+        pixels: &[u8],
+        palette: Option<&[u8; 256]>,
+    ) -> bool {
+        if spans.is_empty()
+            || spans
+                .iter()
+                .any(|&(_, destination, len)| len == 0 || !self.plain_writable(destination, len))
+        {
             return false;
         }
-        let spans: Vec<(u32, u32, usize)> =
-            rows.iter().map(|&(source, destination)| (source, destination, row_len)).collect();
         let presentation = self.presentation();
-        presentation.copy_detail_spans(&spans, pixels, palette, |destination, row| {
+        presentation.copy_detail_spans(spans, pixels, palette, |destination, row| {
             self.write_bytes_unpresented(destination, row)
-                .expect("plain_writable proved the row writable");
+                .expect("plain_writable proved the span writable");
         })
     }
 

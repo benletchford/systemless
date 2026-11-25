@@ -5859,6 +5859,25 @@ pub(crate) fn ppc_copy_bits(
             if clip.len() > 10 || mask_rgn != 0 {
                 mask_storage = Some(clip);
             }
+        } else if let Some(mask) = mask_storage.as_deref() {
+            let Some((top, left, bottom, right)) = ppc_region_storage_bbox(mask) else {
+                if transparent || boolean {
+                    return Some(());
+                }
+                reason = "no-pixels";
+                return None;
+            };
+            copy_top = copy_top.max(i32::from(top));
+            copy_left = copy_left.max(i32::from(left));
+            copy_bottom = copy_bottom.min(i32::from(bottom));
+            copy_right = copy_right.min(i32::from(right));
+            if copy_left >= copy_right || copy_top >= copy_bottom {
+                if transparent || boolean {
+                    return Some(());
+                }
+                reason = "no-pixels";
+                return None;
+            }
         }
 
         // The mask snapshot cannot change during this transfer. Decode its
@@ -5872,18 +5891,10 @@ pub(crate) fn ppc_copy_bits(
         // ports and GWorlds, including indexed-color PixMaps. The import
         // resolves records and masks; the shared operation owns pure
         // byte-aligned or packed srcCopy format, mode, and geometry eligibility.
-        if mask_storage.is_none() {
+        {
             use crate::copy_bits::{BytePixmap, Indexed8ScalingSelection, RowCopy, RowCopyOutcome};
 
-            let indexed8_scaling = Indexed8ScalingSelection::from_adapter_facts(
-                mask_rgn == 0,
-                src_resolved.guest_bounds,
-                dst_resolved.authoritative_bounds,
-                indexed_palette_identity_known,
-                transfer_mode,
-            );
-
-            let outcome = RowCopy {
+            let row_copy = RowCopy {
                 mode,
                 source: BytePixmap {
                     base: src_bits.base_addr,
@@ -5903,10 +5914,36 @@ pub(crate) fn ppc_copy_bits(
                 destination_rect: [dst_top, dst_left, dst_bottom, dst_right].map(i32::from),
                 clip: [copy_top, copy_left, copy_bottom, copy_right],
                 palette: palette_map.as_ref(),
-            }
-            .execute_with_indexed8_scaling(memory, indexed8_scaling);
+            };
+            let outcome = match mask_storage.as_deref() {
+                None => {
+                    let indexed8_scaling = Indexed8ScalingSelection::from_adapter_facts(
+                        mask_rgn == 0,
+                        src_resolved.guest_bounds,
+                        dst_resolved.authoritative_bounds,
+                        indexed_palette_identity_known,
+                        transfer_mode,
+                    );
+                    row_copy.execute_with_indexed8_scaling(memory, indexed8_scaling)
+                }
+                Some(storage) if memory.quickdraw_gpu_renderer().is_none() => {
+                    if storage.len() == 10 {
+                        row_copy.execute_clipped_rows(memory, None)
+                    } else if let Some((band_top, band_rows)) = mask_rows.band_rows() {
+                        row_copy
+                            .execute_clipped_rows(memory, Some((i32::from(band_top), band_rows)))
+                    } else {
+                        RowCopyOutcome::Declined
+                    }
+                }
+                Some(_) => RowCopyOutcome::Declined,
+            };
             match outcome {
                 RowCopyOutcome::Completed => return Some(()),
+                RowCopyOutcome::NoOp if mask_rgn != 0 => {
+                    reason = "no-pixels";
+                    return None;
+                }
                 RowCopyOutcome::NoOp => {
                     reason = "row-copy-no-op";
                     return Some(());
