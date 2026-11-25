@@ -1,12 +1,128 @@
-//! Row kernels: expand pattern rows into destination pixels.
+//! Row kernels: expand pattern rows into destination pixels and apply
+//! boolean transfer modes and whole-row 1-bpp operations.
 //!
-//! patCopy does not depend on the old pixel, so its rows are prepared once
-//! and written without reading the destination.
+//! `patCopy` and `notPatCopy` do not depend on the old pixel, so their rows
+//! are prepared once and written without reading the destination.
 
-use super::paint::Ink;
+use super::memory::RasterMemory;
+use super::paint::{Ink, TransferMode};
 
 #[cfg(test)]
 mod tests;
+
+/// What a whole-row 1-bpp operation does to every bit of a covered run.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum BitRowOp {
+    Set,
+    Clear,
+    Toggle,
+}
+
+/// Apply `op` to bits `first_bit..end_bit` (MSB-first, as QuickDraw packs
+/// them) of the 1-bpp row at `row_base`: masked read-modify-write of the two
+/// edge bytes, one bulk write or read-modify-write for the whole bytes
+/// between.
+///
+/// For `Set` / `Clear`, `middle_scratch` must be pre-filled with `0xFF` /
+/// `0x00` and have length at least the interior whole-byte span. For `Toggle`,
+/// `middle_scratch` is reused in place as the read-modify-write buffer.
+pub(crate) fn apply_bit_row_op<M: RasterMemory>(
+    memory: &mut M,
+    row_base: u32,
+    first_bit: u32,
+    end_bit: u32,
+    op: BitRowOp,
+    middle_scratch: &mut [u8],
+) -> Option<()> {
+    debug_assert!(first_bit < end_bit);
+    let first_byte = first_bit / 8;
+    let last_byte = (end_bit - 1) / 8;
+    let head_mask = 0xFFu8 >> (first_bit % 8);
+    let tail_mask = 0xFFu8 << (7 - ((end_bit - 1) % 8));
+    let apply = |old: u8, mask: u8| match op {
+        BitRowOp::Set => old | mask,
+        BitRowOp::Clear => old & !mask,
+        BitRowOp::Toggle => old ^ mask,
+    };
+    if first_byte == last_byte {
+        let addr = row_base.wrapping_add(first_byte);
+        return memory.modify_byte(addr, |byte| apply(byte, head_mask & tail_mask));
+    }
+    let head_addr = row_base.wrapping_add(first_byte);
+    memory.modify_byte(head_addr, |byte| apply(byte, head_mask))?;
+    let middle = (last_byte - first_byte - 1) as usize;
+    if middle > 0 {
+        let middle_addr = head_addr.wrapping_add(1);
+        match op {
+            BitRowOp::Set | BitRowOp::Clear => {
+                memory.write_row(middle_addr, &middle_scratch[..middle])?;
+            }
+            BitRowOp::Toggle => {
+                memory.modify_row(middle_addr, &mut middle_scratch[..middle], |row| {
+                    for byte in row.iter_mut() {
+                        *byte = !*byte;
+                    }
+                })?;
+            }
+        }
+    }
+    let tail_addr = row_base.wrapping_add(last_byte);
+    memory.modify_byte(tail_addr, |byte| apply(byte, tail_mask))
+}
+
+/// Applies one of the six read-modify-write 8-bpp boolean transfer modes
+/// (`patOr`, `patXor`, `patBic`, and their `notPat*` counterparts) across
+/// `dst`, using `aligned_bits` rotated so bit 7 corresponds to `dst[0]`.
+#[inline]
+pub(crate) fn apply_boolean_row_8(
+    dst: &mut [u8],
+    aligned_bits: u8,
+    mode: TransferMode,
+    fg: u8,
+    bg: u8,
+) {
+    let bits = if mode.inverts_source() {
+        !aligned_bits
+    } else {
+        aligned_bits
+    };
+    if bits == 0 {
+        return;
+    }
+    match mode {
+        TransferMode::PatOr | TransferMode::NotPatOr if bits == 0xFF => dst.fill(fg),
+        TransferMode::PatBic | TransferMode::NotPatBic if bits == 0xFF => dst.fill(bg),
+        TransferMode::PatXor | TransferMode::NotPatXor if bits == 0xFF => {
+            for pixel in dst {
+                *pixel = !*pixel;
+            }
+        }
+        TransferMode::PatOr | TransferMode::NotPatOr => {
+            for (i, pixel) in dst.iter_mut().enumerate() {
+                if bits & (0x80 >> (i & 7)) != 0 {
+                    *pixel = fg;
+                }
+            }
+        }
+        TransferMode::PatXor | TransferMode::NotPatXor => {
+            for (i, pixel) in dst.iter_mut().enumerate() {
+                if bits & (0x80 >> (i & 7)) != 0 {
+                    *pixel = !*pixel;
+                }
+            }
+        }
+        TransferMode::PatBic | TransferMode::NotPatBic => {
+            for (i, pixel) in dst.iter_mut().enumerate() {
+                if bits & (0x80 >> (i & 7)) != 0 {
+                    *pixel = bg;
+                }
+            }
+        }
+        TransferMode::PatCopy | TransferMode::NotPatCopy => {
+            debug_assert!(false, "copy modes use PatCopyRows without reading destination");
+        }
+    }
+}
 
 /// The patCopy rows of one rectangle draw, `width` pixels starting at port
 /// x `left`. Above 1 bit per pixel, patCopy gives black pattern bits the
@@ -37,7 +153,11 @@ impl<'s> PatCopyRows<'s> {
         width: usize,
         bytes_per_pixel: usize,
     ) -> Self {
-        let pattern = ink.pattern;
+        let pattern = if ink.mode.inverts_source() {
+            ink.pattern.map(|row| !row)
+        } else {
+            ink.pattern
+        };
         if bytes_per_pixel == 1 && (pattern == [0xFF; 8] || pattern == [0x00; 8]) {
             let fill = if pattern[0] == 0xFF {
                 ink.fg as u8
