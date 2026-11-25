@@ -934,6 +934,76 @@ pub fn screen_pixel_rgb_with_gamma(
     }
 }
 
+/// Owner-side capture cache. Exclusive access to the frame invalidates the
+/// guest memory and palette snapshots before the caller can edit it.
+#[derive(Default)]
+pub struct PackedScreenCapture {
+    frame: PackedScreenFrame,
+    palette_source: Option<Box<([[u16; 3]; 256], DisplayGamma)>>,
+    pixels_mark: Option<crate::memory::presentation::ScreenMark>,
+}
+
+impl std::ops::Deref for PackedScreenCapture {
+    type Target = PackedScreenFrame;
+
+    fn deref(&self) -> &Self::Target {
+        &self.frame
+    }
+}
+
+impl std::ops::DerefMut for PackedScreenCapture {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.palette_source = None;
+        self.pixels_mark = None;
+        &mut self.frame
+    }
+}
+
+impl PackedScreenCapture {
+    /// Refresh the owned pixels and palette from the current guest screen.
+    pub fn capture(
+        &mut self,
+        bus: &MacMemoryBus,
+        screen_mode: (u32, u32, u16, u16, u16),
+        device_clut: &[[u16; 3]; 256],
+        device_gamma: &DisplayGamma,
+    ) {
+        if self.frame.screen_mode != screen_mode {
+            self.frame.screen_mode = screen_mode;
+            self.pixels_mark = None;
+        }
+        if !self
+            .palette_source
+            .as_ref()
+            .is_some_and(|source| &source.0 == device_clut && &source.1 == device_gamma)
+        {
+            self.frame.palette = argb_palette_from_clut_with_gamma(device_clut, device_gamma);
+            match &mut self.palette_source {
+                Some(source) => {
+                    source.0 = *device_clut;
+                    source.1 = *device_gamma;
+                }
+                None => {
+                    self.palette_source = Some(Box::new((*device_clut, *device_gamma)));
+                }
+            }
+        }
+        if let Some(length) =
+            validated_screen_framebuffer_len(bus, screen_mode).filter(|&length| length != 0)
+        {
+            bus.capture_packed_screen(
+                screen_mode,
+                length,
+                &mut self.frame.pixels,
+                &mut self.pixels_mark,
+            );
+        } else {
+            self.frame.pixels.clear();
+            self.pixels_mark = None;
+        }
+    }
+}
+
 /// An owned, complete packed screen and its display palette. Capturing at an
 /// owner-controlled boundary keeps pixels and gamma-adjusted colors coherent;
 /// a presenter can retain this frame after guest memory changes or disappears.
@@ -2629,5 +2699,64 @@ mod owned_frame_tests {
         frame.capture(&bus, (base, 2, 2, 1, 8), &clut, &linear_display_gamma());
         frame.render_argb(&mut output);
         assert_eq!(output, [0xff0000ff, 0xff00ff00]);
+    }
+
+    #[test]
+    fn packed_screen_capture_reuses_unchanged_rows_and_palette_with_presentation() {
+        let mut bus = MacMemoryBus::new(1024 * 1024);
+        let base = 0x2000;
+        let mode = (base, 8, 8, 4, 8);
+        let mut clut = [[0u16; 3]; 256];
+        for i in 0..256 {
+            clut[i] = [(i as u16) << 8, ((255 - i) as u16) << 8, (i as u16) * 100];
+        }
+        let palette8: [[u8; 3]; 256] = std::array::from_fn(|i| {
+            [
+                (clut[i][0] >> 8) as u8,
+                (clut[i][1] >> 8) as u8,
+                (clut[i][2] >> 8) as u8,
+            ]
+        });
+        bus.prepare_outline_presentation(mode, palette8);
+        for i in 0..32u32 {
+            bus.write_byte(base + i, (i * 5) as u8);
+        }
+
+        let gamma = linear_display_gamma();
+        let mut cached = PackedScreenCapture::default();
+        let mut fresh = PackedScreenFrame::default();
+        let mut out_cached = Vec::new();
+        let mut out_fresh = Vec::new();
+
+        // Initial capture + unchanged repeat.
+        cached.capture(&bus, mode, &clut, &gamma);
+        cached.capture(&bus, mode, &clut, &gamma);
+        fresh.capture(&bus, mode, &clut, &gamma);
+        cached.render_argb(&mut out_cached);
+        fresh.render_argb(&mut out_fresh);
+        assert_eq!(out_cached, out_fresh);
+
+        cached.pixels[0] ^= 255;
+        cached.palette[0] ^= 255;
+        cached.capture(&bus, mode, &clut, &gamma);
+        assert_eq!(cached.pixels, fresh.pixels);
+        assert_eq!(cached.palette, fresh.palette);
+
+        // Single-row write + CLUT update.
+        bus.write_byte(base + 19, 200);
+        clut[200] = [65535, 16384, 32768];
+        cached.capture(&bus, mode, &clut, &gamma);
+        fresh = PackedScreenFrame::default();
+        fresh.capture(&bus, mode, &clut, &gamma);
+        cached.render_argb(&mut out_cached);
+        fresh.render_argb(&mut out_fresh);
+        assert_eq!(out_cached, out_fresh);
+
+        // Invalid range clears pixels and resets mark cleanly.
+        cached.capture(&bus, (0x00ff_fff0, 8, 8, 4, 8), &clut, &gamma);
+        assert!(cached.pixels.is_empty());
+        cached.capture(&bus, mode, &clut, &gamma);
+        cached.render_argb(&mut out_cached);
+        assert_eq!(out_cached, out_fresh);
     }
 }

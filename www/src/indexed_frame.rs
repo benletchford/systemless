@@ -2,14 +2,14 @@
 //! The patch uses the scalar cursor renderer, including color-cursor inversion.
 //! No renderer keeps a view into mutable guest RAM.
 
-use systemless::systems::macintosh::display::{self, CursorImage, PackedScreenFrame};
+use systemless::systems::macintosh::display::{self, CursorImage, PackedScreenCapture};
 use systemless::systems::macintosh::memory::MacMemoryBus;
 
 type ScreenMode = (u32, u32, u16, u16, u16);
 
 #[derive(Default)]
 pub(crate) struct IndexedFrame {
-    pub screen: PackedScreenFrame,
+    pub screen: PackedScreenCapture,
     pub palette: Vec<u8>,
     pub cursor: Option<CursorPatch>,
 }
