@@ -14678,7 +14678,7 @@ impl super::TrapDispatcher {
                 // the shared MaskedRowCopy kernel, fetching each row once and
                 // storing each opaque run as one span; anything it declines
                 // falls back to the generic per-pixel loop below.
-                {
+                if src_info.pixel_size == 8 && dst_info.pixel_size == 8 {
                     use crate::copy_bits::{BytePixmap, MaskedRowCopy, MaskedRowCopyOutcome};
 
                     let to_pixmap = |info: CopyBitmapInfo| BytePixmap {

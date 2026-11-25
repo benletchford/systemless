@@ -293,6 +293,12 @@ pub(crate) trait CopyBitsMemory {
 
     fn read_copy_row(&mut self, address: u32, bytes: &mut [u8]) -> Option<()>;
     fn write_copy_row(&mut self, address: u32, bytes: &[u8]) -> Option<()>;
+
+    /// Store one opaque CopyMask run using the adapter's write semantics.
+    fn write_masked_run(&mut self, address: u32, bytes: &[u8]) -> Option<()> {
+        self.write_copy_row(address, bytes)
+    }
+
     fn capture_copy_detail(
         &self,
         _address: u32,
@@ -557,6 +563,13 @@ impl CopyBitsMemory for MacMemoryBus {
             return None;
         }
         self.read_bytes_into(address, bytes);
+        Some(())
+    }
+
+    fn write_masked_run(&mut self, address: u32, bytes: &[u8]) -> Option<()> {
+        // The classic 8-bit trap delegates the whole run to the bus, which
+        // can ignore a read-only overlay and continue into writable memory.
+        self.write_bytes(address, bytes);
         Some(())
     }
 
@@ -1925,7 +1938,7 @@ impl MaskedRowCopy<'_> {
                 wrote_any = true;
                 let dst_addr = dst_row_base + byte_start as u32;
                 if memory
-                    .write_copy_row(dst_addr, &source_row[byte_start..byte_end])
+                    .write_masked_run(dst_addr, &source_row[byte_start..byte_end])
                     .is_none()
                 {
                     for px in start..column {
@@ -4130,11 +4143,16 @@ mod tests {
                         palette: None,
                     },
                 ),
-                MaskedRowCopyOutcome::WriteFailure { rows_completed: 1 }
+                if classic {
+                    MaskedRowCopyOutcome::Completed { wrote_any: true }
+                } else {
+                    MaskedRowCopyOutcome::WriteFailure { rows_completed: 1 }
+                }
             );
             let mut committed = [0; 8];
             ro.read_bytes_into(DESTINATION, &mut committed).unwrap();
-            assert_eq!(committed, [1, 2, 3, 4, 5, 6, 0xaa, 0xaa]);
+            let last = if classic { 8 } else { 0xaa };
+            assert_eq!(committed, [1, 2, 3, 4, 5, 6, 0xaa, last]);
         }
     }
 }
