@@ -934,6 +934,76 @@ pub fn screen_pixel_rgb_with_gamma(
     }
 }
 
+/// Owner-side capture cache. Exclusive access to the frame invalidates the
+/// guest memory and palette snapshots before the caller can edit it.
+#[derive(Default)]
+pub struct PackedScreenCapture {
+    frame: PackedScreenFrame,
+    palette_source: Option<Box<([[u16; 3]; 256], DisplayGamma)>>,
+    pixels_mark: Option<crate::memory::presentation::ScreenMark>,
+}
+
+impl std::ops::Deref for PackedScreenCapture {
+    type Target = PackedScreenFrame;
+
+    fn deref(&self) -> &Self::Target {
+        &self.frame
+    }
+}
+
+impl std::ops::DerefMut for PackedScreenCapture {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.palette_source = None;
+        self.pixels_mark = None;
+        &mut self.frame
+    }
+}
+
+impl PackedScreenCapture {
+    /// Refresh the owned pixels and palette from the current guest screen.
+    pub fn capture(
+        &mut self,
+        bus: &MacMemoryBus,
+        screen_mode: (u32, u32, u16, u16, u16),
+        device_clut: &[[u16; 3]; 256],
+        device_gamma: &DisplayGamma,
+    ) {
+        if self.frame.screen_mode != screen_mode {
+            self.frame.screen_mode = screen_mode;
+            self.pixels_mark = None;
+        }
+        if !self
+            .palette_source
+            .as_ref()
+            .is_some_and(|source| &source.0 == device_clut && &source.1 == device_gamma)
+        {
+            self.frame.palette = argb_palette_from_clut_with_gamma(device_clut, device_gamma);
+            match &mut self.palette_source {
+                Some(source) => {
+                    source.0 = *device_clut;
+                    source.1 = *device_gamma;
+                }
+                None => {
+                    self.palette_source = Some(Box::new((*device_clut, *device_gamma)));
+                }
+            }
+        }
+        if let Some(length) =
+            validated_screen_framebuffer_len(bus, screen_mode).filter(|&length| length != 0)
+        {
+            bus.capture_packed_screen(
+                screen_mode,
+                length,
+                &mut self.frame.pixels,
+                &mut self.pixels_mark,
+            );
+        } else {
+            self.frame.pixels.clear();
+            self.pixels_mark = None;
+        }
+    }
+}
+
 /// An owned, complete packed screen and its display palette. Capturing at an
 /// owner-controlled boundary keeps pixels and gamma-adjusted colors coherent;
 /// a presenter can retain this frame after guest memory changes or disappears.
@@ -942,8 +1012,6 @@ pub struct PackedScreenFrame {
     pub screen_mode: (u32, u32, u16, u16, u16),
     pub pixels: Vec<u8>,
     pub palette: [u32; 256],
-    palette_source: Option<Box<([[u16; 3]; 256], DisplayGamma)>>,
-    pixels_mark: Option<crate::memory::presentation::ScreenMark>,
 }
 
 impl Default for PackedScreenFrame {
@@ -952,8 +1020,6 @@ impl Default for PackedScreenFrame {
             screen_mode: (0, 0, 0, 0, 0),
             pixels: Vec::new(),
             palette: [BLACK_ARGB; 256],
-            palette_source: None,
-            pixels_mark: None,
         }
     }
 }
@@ -968,33 +1034,14 @@ impl PackedScreenFrame {
         device_clut: &[[u16; 3]; 256],
         device_gamma: &DisplayGamma,
     ) {
-        if self.screen_mode != screen_mode {
-            self.screen_mode = screen_mode;
-            self.pixels_mark = None;
-        }
-        if !self
-            .palette_source
-            .as_ref()
-            .is_some_and(|source| &source.0 == device_clut && &source.1 == device_gamma)
-        {
-            self.palette = argb_palette_from_clut_with_gamma(device_clut, device_gamma);
-            match &mut self.palette_source {
-                Some(source) => {
-                    source.0 = *device_clut;
-                    source.1 = *device_gamma;
-                }
-                None => {
-                    self.palette_source = Some(Box::new((*device_clut, *device_gamma)));
-                }
-            }
-        }
+        self.screen_mode = screen_mode;
+        self.palette = argb_palette_from_clut_with_gamma(device_clut, device_gamma);
+        self.pixels.clear();
         if let Some(length) =
             validated_screen_framebuffer_len(bus, screen_mode).filter(|&length| length != 0)
         {
-            bus.capture_packed_screen(screen_mode, length, &mut self.pixels, &mut self.pixels_mark);
-        } else {
-            self.pixels.clear();
-            self.pixels_mark = None;
+            self.pixels
+                .extend_from_slice(bus.ram_slice(screen_mode.0, length));
         }
     }
 
@@ -1888,7 +1935,6 @@ mod tests {
                     .map(|_| next() as u8)
                     .collect(),
                 palette: std::array::from_fn(|_| 0xff00_0000 | (next() & 0x00ff_ffff)),
-                ..PackedScreenFrame::default()
             };
             for step in 0..12 {
                 match step % 4 {
@@ -1914,7 +1960,6 @@ mod tests {
             screen_mode: (0, 40, 40, 10, 8),
             pixels: vec![1; 40],
             palette: [0xff11_2233; 256],
-            ..PackedScreenFrame::default()
         };
         cache.render(&short, &mut cached);
         short.render_argb(&mut full);
@@ -2678,7 +2723,7 @@ mod owned_frame_tests {
         }
 
         let gamma = linear_display_gamma();
-        let mut cached = PackedScreenFrame::default();
+        let mut cached = PackedScreenCapture::default();
         let mut fresh = PackedScreenFrame::default();
         let mut out_cached = Vec::new();
         let mut out_fresh = Vec::new();
@@ -2690,6 +2735,12 @@ mod owned_frame_tests {
         cached.render_argb(&mut out_cached);
         fresh.render_argb(&mut out_fresh);
         assert_eq!(out_cached, out_fresh);
+
+        cached.pixels[0] ^= 255;
+        cached.palette[0] ^= 255;
+        cached.capture(&bus, mode, &clut, &gamma);
+        assert_eq!(cached.pixels, fresh.pixels);
+        assert_eq!(cached.palette, fresh.palette);
 
         // Single-row write + CLUT update.
         bus.write_byte(base + 19, 200);
