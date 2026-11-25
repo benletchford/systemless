@@ -1801,7 +1801,9 @@ pub(crate) fn ppc_round_rect_rows(
 }
 
 /// A negative pnVis hides every shape verb, as in the 68K shape path.
-fn ppc_port_pen_hidden(memory: &mut PpcSectionMem, port: u32) -> bool {
+/// Imaging With QuickDraw (1994), p. 3-41: "Whenever pnVis is negative,
+/// the pen doesn't draw on the screen."
+pub(crate) fn ppc_port_pen_hidden(memory: &mut PpcSectionMem, port: u32) -> bool {
     memory
         .read_u16_be(port.wrapping_add(PPC_CGRAF_PORT_PN_VIS_OFFSET))
         .is_some_and(|visibility| (visibility as i16) < 0)
