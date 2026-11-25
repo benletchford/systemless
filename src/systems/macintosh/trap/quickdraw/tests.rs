@@ -13914,6 +13914,57 @@
         assert_eq!(bus.read_bytes(dst_base + 4, 8), expected);
     }
 
+    // A read-only byte inside an opaque run must not stop the classic trap.
+    // At 8 bits the bus skips the protected byte and still stores the
+    // writable byte after it. A 16-bit CopyMask takes the deep-mask transfer,
+    // which leaves the pixel that overlaps the protected byte unchanged.
+    #[test]
+    fn copymask_opaque_run_writes_past_a_read_only_destination_byte() {
+        const SOURCE: u32 = 0x00D0_0000;
+        const DESTINATION: u32 = 0x00E0_0000;
+        for (depth, width, mask_row, expected) in [
+            (8, 4, 0xf0, [1, 2, 3, 4, 5, 6, 0xaa, 8]),
+            (16, 2, 0xc0, [1, 2, 3, 4, 5, 6, 0xaa, 0xaa]),
+        ] {
+            let (mut d, mut cpu, mut bus) = setup();
+            let mut memory = GuestAddressSpace::new();
+            memory.add_region(SOURCE, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+            memory.add_region(DESTINATION, vec![0xaa; 8]);
+            memory.add_readonly_region(DESTINATION + 6, vec![0xaa]);
+            bus.attach_guest_address_space(memory.shared_view());
+
+            let src_pixmap = bus.alloc(50);
+            let mask_bits = bus.alloc(14);
+            let dst_pixmap = bus.alloc(50);
+            let mask_base = bus.alloc(2);
+            if depth == 8 {
+                write_pixmap_8(&mut bus, src_pixmap, SOURCE, 4, 2, 0);
+                write_pixmap_8(&mut bus, dst_pixmap, DESTINATION, 4, 2, 0);
+            } else {
+                write_direct_pixmap(&mut bus, src_pixmap, SOURCE, 2, 2, 16);
+                write_direct_pixmap(&mut bus, dst_pixmap, DESTINATION, 2, 2, 16);
+            }
+            write_bitmap_1bpp(&mut bus, mask_bits, mask_base, 1, (0, 0, 2, width));
+            bus.write_byte(mask_base, mask_row);
+            bus.write_byte(mask_base + 1, mask_row);
+
+            let rect = bus.alloc(8);
+            write_rect(&mut bus, rect, 0, 0, 2, width);
+            bus.write_long(TEST_SP, rect);
+            bus.write_long(TEST_SP + 4, rect);
+            bus.write_long(TEST_SP + 8, rect);
+            bus.write_long(TEST_SP + 12, dst_pixmap);
+            bus.write_long(TEST_SP + 16, mask_bits);
+            bus.write_long(TEST_SP + 20, src_pixmap);
+
+            let result = d.dispatch_quickdraw(true, 0x017, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            let mut actual = [0; 8];
+            memory.read_bytes_into(DESTINATION, &mut actual).unwrap();
+            assert_eq!(actual, expected, "depth={depth}");
+        }
+    }
+
     // Opaque runs are stored as spans. On a presented screen that must match
     // per-pixel stores: retained text under opaque pixels is replaced, and
     // text under transparent pixels stays as it was.
