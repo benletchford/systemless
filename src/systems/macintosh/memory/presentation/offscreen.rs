@@ -499,9 +499,10 @@ pub(super) struct OffscreenDetail {
 /// What guest stores have changed of a run.
 #[derive(Clone, Copy)]
 struct RunDamage {
-    /// The first and last address changed. The run's cells between them
-    /// are gone.
+    /// First and last changed bytes, and the outside edges of the stores
+    /// that reached them. Addresses between separate stores can remain live.
     span: (u32, u32),
+    store_edges: (u32, u32),
     /// Two of its remaining cells that show it still holds text (see
     /// `text_witness`), checked again before scanning for others.
     witness: (u32, u32),
@@ -878,27 +879,47 @@ impl OffscreenDetail {
                 }
             }
         }
-        // The run's other cells may still hold bytes the new picture happens
-        // to share. What changed the run covers the rows between its first
-        // and last changed pixel, so the run's cells there go too: a picture
-        // drawn over the whole text, or the background restored under it,
-        // takes all of it, and something drawn in front of a few of its rows
-        // (a sprite passing over it) leaves the others sharp. If what is
-        // left shows no text, the run goes whole.
+        // A changed byte on either side of a cell can expose a stale glyph
+        // edge, but two independent stores say nothing about the gap between
+        // them. Invalidate only within actual writes. Remember the outer
+        // tails of the boundary stores until a later change brackets them.
+        let store_end = last;
         let mut ended = Vec::new();
         for (run, (first, last)) in runs {
             let damage = self.damage.get(&run).copied();
-            let (old_first, old_last) = damage.map_or((first, first), |damage| damage.span);
+            let (old_first, old_last) = damage.map_or((first, last), |d| d.span);
             let span = (first.min(old_first), last.max(old_last));
-            self.remove_run_cells(run, span.0, old_first);
-            self.remove_run_cells(run, old_last.saturating_add(1), span.1.saturating_add(1));
+            let (mut left, mut right) = (from, store_end);
+            if let Some(old) = damage {
+                if first < old_first {
+                    self.remove_run_cells(run, first.max(old.store_edges.0), old_first);
+                }
+                left = left.min(old.store_edges.0);
+                if last > old_last {
+                    self.remove_run_cells(
+                        run,
+                        old_last.saturating_add(1),
+                        last.min(old.store_edges.1).saturating_add(1),
+                    );
+                }
+                right = right.max(old.store_edges.1);
+            }
+            self.remove_run_cells(
+                run,
+                from.max(span.0),
+                store_end.min(span.1).saturating_add(1),
+            );
             let witness = damage
                 .map(|damage| damage.witness)
                 .filter(|&(a, b)| self.holds_run_cell(a, run) && self.holds_run_cell(b, run))
                 .or_else(|| self.text_witness(run, first));
             match witness {
                 Some(witness) => {
-                    self.damage.insert(run, RunDamage { span, witness });
+                    self.damage.insert(run, RunDamage {
+                        span,
+                        store_edges: (left, right),
+                        witness,
+                    });
                 }
                 None => {
                     self.damage.remove(&run);
@@ -1307,9 +1328,16 @@ mod tests {
         let mut store = fresh();
         assert!(store.remove_changed(0x4000, &[7, 7]));
         assert_eq!(store.len(), 4);
-        // Over the first and last, it takes the rows between as well.
+        // A separate write to the last row leaves the untouched middle intact.
         assert!(store.remove_changed(0x4201, &[7]));
-        assert_eq!(store.len(), 0);
+        assert!(store.holds_run_cell(0x4100, 1));
+        assert!(store.holds_run_cell(0x4101, 1));
+        // A blitter sweeping upward has the same guarantee.
+        let mut store = fresh();
+        assert!(store.remove_changed(0x4200, &[7, 7]));
+        assert!(store.remove_changed(0x4001, &[7]));
+        assert!(store.holds_run_cell(0x4100, 1));
+        assert!(store.holds_run_cell(0x4101, 1));
         // Erasing to the background changes only the ink bytes; the edges
         // left would show nothing but the old glyphs' outline, so they go.
         let mut store = fresh();
