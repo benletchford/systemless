@@ -961,12 +961,15 @@ pub(super) fn dispatch_quickdraw_import(
                     quickdraw_fore_color.blue,
                 );
             }
+            // Each shape verb below records into an open picture or region
+            // first; only its drawing waits on ppc_port_pen_hidden, since
+            // OpenRgn hides the pen while it collects the outline.
             if let (Some(commands), Some(rect)) = (
                 ppc_open_picture_commands(toolbox_startup, current_gworld),
                 ppc_read_rect(memory, cpu.gpr[3]),
             ) {
                 pict::recording_push_rect(commands, 0x0031, rect);
-            } else {
+            } else if !ppc_port_pen_hidden(memory, current_gworld) {
                 let _ = ppc_paint_rect(
                     cpu,
                     memory,
@@ -1002,7 +1005,9 @@ pub(super) fn dispatch_quickdraw_import(
                     ppc_read_rect(memory, cpu.gpr[3]), pixpat,
                 );
             }
-            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3])
+                .filter(|_| !ppc_port_pen_hidden(memory, current_gworld))
+            {
                 let _ = ppc_erase_rect(
                     memory,
                     gworlds,
@@ -1026,13 +1031,15 @@ pub(super) fn dispatch_quickdraw_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::InvertRect => {
-            let _ = ppc_invert_rect(cpu, memory, gworlds, current_gworld);
+            if !ppc_port_pen_hidden(memory, current_gworld) {
+                let _ = ppc_invert_rect(cpu, memory, gworlds, current_gworld);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::FrameRect => {
             if toolbox_startup.open_region_port == current_gworld {
                 ppc_open_region_include_rect(toolbox_startup, memory, cpu.gpr[3]);
-            } else {
+            } else if !ppc_port_pen_hidden(memory, current_gworld) {
                 let _ = ppc_frame_rect(
                     cpu,
                     memory,
@@ -1045,7 +1052,9 @@ pub(super) fn dispatch_quickdraw_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::FillRect => {
-            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3])
+                .filter(|_| !ppc_port_pen_hidden(memory, current_gworld))
+            {
                 let fore = (
                     *quickdraw_fore_color,
                     quickdraw_fore_indices.get(&current_gworld).copied(),
@@ -1075,7 +1084,9 @@ pub(super) fn dispatch_quickdraw_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::FillCRect => {
-            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3])
+                .filter(|_| !ppc_port_pen_hidden(memory, current_gworld))
+            {
                 let pp_handle = cpu.gpr[4];
                 let _ = ppc_fill_color_rect(
                     memory,
@@ -1114,7 +1125,7 @@ pub(super) fn dispatch_quickdraw_import(
                 } else {
                     ppc_open_region_include_rect(toolbox_startup, memory, cpu.gpr[3]);
                 }
-            } else {
+            } else if !ppc_port_pen_hidden(memory, current_gworld) {
                 let color = if matches!(
                     binding.dispatcher_target,
                     PpcImportDispatcherTarget::EraseOval
@@ -1174,7 +1185,7 @@ pub(super) fn dispatch_quickdraw_import(
                     })
                     .collect();
                 ppc_open_region_include_rows(toolbox_startup, top, rows);
-            } else {
+            } else if !ppc_port_pen_hidden(memory, current_gworld) {
                 let fore = (
                     *quickdraw_fore_color,
                     quickdraw_fore_indices.get(&current_gworld).copied(),
@@ -1369,7 +1380,9 @@ pub(super) fn dispatch_quickdraw_import(
             // Inside Macintosh: Imaging With QuickDraw (FrameArc): draws the
             // arc of the oval's outline with the pen; arcs are not added to
             // a region being recorded.
-            if toolbox_startup.open_region_port != current_gworld {
+            if toolbox_startup.open_region_port != current_gworld
+                && !ppc_port_pen_hidden(memory, current_gworld)
+            {
                 let _ = ppc_draw_arc(
                     memory,
                     gworlds,
@@ -1457,7 +1470,7 @@ pub(super) fn dispatch_quickdraw_import(
         PpcImportDispatcherTarget::PaintArc => {
             if toolbox_startup.open_region_port == current_gworld {
                 ppc_open_region_include_rect(toolbox_startup, memory, cpu.gpr[3]);
-            } else {
+            } else if !ppc_port_pen_hidden(memory, current_gworld) {
                 let _ = ppc_paint_arc(
                     memory,
                     gworlds,
@@ -1498,7 +1511,7 @@ pub(super) fn dispatch_quickdraw_import(
                         .map(|(left, right)| vec![left, right])
                         .collect();
                     ppc_open_region_include_rows(toolbox_startup, rect.0, rows);
-                } else {
+                } else if !ppc_port_pen_hidden(memory, current_gworld) {
                     for (row, (left, right)) in
                         TrapDispatcher::compute_rrect_spans(&shape, oval_width, oval_height)
                             .into_iter()
@@ -1540,7 +1553,7 @@ pub(super) fn dispatch_quickdraw_import(
                         .map(|(left, right)| vec![left, right])
                         .collect();
                     ppc_open_region_include_rows(toolbox_startup, rect.0, rows);
-                } else {
+                } else if !ppc_port_pen_hidden(memory, current_gworld) {
                     ppc_erase_round_rect(
                         memory,
                         gworlds,
@@ -1586,7 +1599,7 @@ pub(super) fn dispatch_quickdraw_import(
                         .map(|(left, right)| vec![left, right])
                         .collect();
                     ppc_open_region_include_rows(toolbox_startup, rect.0, rows);
-                } else {
+                } else if !ppc_port_pen_hidden(memory, current_gworld) {
                     ppc_fill_round_rect(
                         memory,
                         gworlds,
@@ -1640,7 +1653,7 @@ pub(super) fn dispatch_quickdraw_import(
                     .collect();
                     ppc_open_region_include_rows(toolbox_startup, top, rows);
                 }
-            } else {
+            } else if !ppc_port_pen_hidden(memory, current_gworld) {
                 let explicit_index = quickdraw_fore_indices.get(&current_gworld).copied();
                 if paint {
                     let _ = ppc_paint_round_rect(
@@ -1667,7 +1680,7 @@ pub(super) fn dispatch_quickdraw_import(
         PpcImportDispatcherTarget::FrameRgn => {
             if toolbox_startup.open_region_port == current_gworld {
                 ppc_open_region_include_region(toolbox_startup, memory, cpu.gpr[3]);
-            } else {
+            } else if !ppc_port_pen_hidden(memory, current_gworld) {
                 let _ = ppc_frame_region(
                     memory,
                     gworlds,
@@ -1681,20 +1694,22 @@ pub(super) fn dispatch_quickdraw_import(
         }
         PpcImportDispatcherTarget::EraseRgn => {
             // EraseRgn fills the region with the port's background colour.
-            let _ = ppc_paint_region(
-                memory,
-                gworlds,
-                current_gworld,
-                cpu.gpr[3],
-                *quickdraw_back_color,
-                None,
-            );
+            if !ppc_port_pen_hidden(memory, current_gworld) {
+                let _ = ppc_paint_region(
+                    memory,
+                    gworlds,
+                    current_gworld,
+                    cpu.gpr[3],
+                    *quickdraw_back_color,
+                    None,
+                );
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::PaintRgn => {
             if toolbox_startup.open_region_port == current_gworld {
                 ppc_open_region_include_region(toolbox_startup, memory, cpu.gpr[3]);
-            } else {
+            } else if !ppc_port_pen_hidden(memory, current_gworld) {
                 let _ = ppc_paint_region(
                     memory,
                     gworlds,
@@ -1709,7 +1724,7 @@ pub(super) fn dispatch_quickdraw_import(
         PpcImportDispatcherTarget::FillRgn => {
             if toolbox_startup.open_region_port == current_gworld {
                 ppc_open_region_include_region(toolbox_startup, memory, cpu.gpr[3]);
-            } else {
+            } else if !ppc_port_pen_hidden(memory, current_gworld) {
                 let rgn_handle = cpu.gpr[3];
                 let pat_ptr = cpu.gpr[4];
                 let pat = if pat_ptr != 0 {
@@ -1738,7 +1753,7 @@ pub(super) fn dispatch_quickdraw_import(
         PpcImportDispatcherTarget::FillCRgn => {
             if toolbox_startup.open_region_port == current_gworld {
                 ppc_open_region_include_region(toolbox_startup, memory, cpu.gpr[3]);
-            } else {
+            } else if !ppc_port_pen_hidden(memory, current_gworld) {
                 let rgn_handle = cpu.gpr[3];
                 let pp_handle = cpu.gpr[4];
                 let _ = ppc_fill_color_region(
@@ -1756,7 +1771,9 @@ pub(super) fn dispatch_quickdraw_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::InvertRgn => {
-            let _ = ppc_invert_region(memory, gworlds, current_gworld, cpu.gpr[3]);
+            if !ppc_port_pen_hidden(memory, current_gworld) {
+                let _ = ppc_invert_region(memory, gworlds, current_gworld, cpu.gpr[3]);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetPen => {

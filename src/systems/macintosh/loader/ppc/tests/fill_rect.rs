@@ -3647,3 +3647,129 @@ fn bold_times_measures_and_draws_with_mac_os_9_widths() {
         "bold Times draws other pixels than its bold face"
     );
 }
+
+fn write_test_polygon(loaded: &mut PpcLoadedApp) {
+    write_polygon(loaded, &test_polygons()[0]);
+}
+
+/// Every PowerPC shape import with arguments that draw on the 8-bit test port.
+fn pen_gated_shape_imports() -> Vec<(&'static str, PpcImportDispatcherTarget, [u32; 4])> {
+    use PpcImportDispatcherTarget as T;
+    use PpcQuickDrawShapeOperation as S;
+    let region = REGION_HANDLES[1];
+    let mut imports = vec![
+        ("PaintRect", T::PaintRect, [RECT, 0, 0, 0]),
+        ("FrameRect", T::FrameRect, [RECT, 0, 0, 0]),
+        ("EraseRect", T::EraseRect, [RECT, 0, 0, 0]),
+        ("InvertRect", T::InvertRect, [RECT, 0, 0, 0]),
+        ("FillRect", T::FillRect, [RECT, PATTERN, 0, 0]),
+        ("FillCRect", T::FillCRect, [RECT, PIXPAT_HANDLE, 0, 0]),
+        ("PaintOval", T::PaintOval, [RECT, 0, 0, 0]),
+        ("FrameOval", T::FrameOval, [RECT, 0, 0, 0]),
+        ("EraseOval", T::EraseOval, [RECT, 0, 0, 0]),
+        ("FillOval", shape_target(S::FillOval), [RECT, PATTERN, 0, 0]),
+        ("PaintRoundRect", T::PaintRoundRect, [RECT, 8, 8, 0]),
+        ("FrameRoundRect", T::FrameRoundRect, [RECT, 8, 8, 0]),
+        ("EraseRoundRect", T::EraseRoundRect, [RECT, 8, 8, 0]),
+        ("InvertRoundRect", T::InvertRoundRect, [RECT, 8, 8, 0]),
+        ("FillRoundRect", T::FillRoundRect, [RECT, 8, 8, PATTERN]),
+        ("PaintArc", T::PaintArc, [RECT, 0, 180, 0]),
+        ("FrameArc", shape_target(S::FrameArc), [RECT, 0, 180, 0]),
+        ("PaintPoly", T::PaintPoly, [POLY_HANDLE, 0, 0, 0]),
+        ("ErasePoly", T::ErasePoly, [POLY_HANDLE, 0, 0, 0]),
+        ("FillPoly", T::FillPoly, [POLY_HANDLE, PATTERN, 0, 0]),
+        ("PaintRgn", T::PaintRgn, [region, 0, 0, 0]),
+        ("FrameRgn", T::FrameRgn, [region, 0, 0, 0]),
+        ("EraseRgn", T::EraseRgn, [region, 0, 0, 0]),
+        ("InvertRgn", T::InvertRgn, [region, 0, 0, 0]),
+        ("FillRgn", T::FillRgn, [region, PATTERN, 0, 0]),
+        ("FillCRgn", T::FillCRgn, [region, PIXPAT_HANDLE, 0, 0]),
+    ];
+    // StdRect and StdRgn redirect each GrafVerb to the matching verb.
+    let std_rect = [
+        "StdRect frame",
+        "StdRect paint",
+        "StdRect erase",
+        "StdRect invert",
+        "StdRect fill",
+    ];
+    let std_rgn = [
+        "StdRgn frame",
+        "StdRgn paint",
+        "StdRgn erase",
+        "StdRgn invert",
+        "StdRgn fill",
+    ];
+    for (verb, (rect_name, rgn_name)) in std_rect.into_iter().zip(std_rgn).enumerate() {
+        let verb = verb as u32;
+        imports.push((rect_name, shape_target(S::StdRect), [verb, RECT, 0, 0]));
+        imports.push((rgn_name, shape_target(S::StdRgn), [verb, region, 0, 0]));
+    }
+    imports
+}
+
+#[test]
+fn shape_imports_draw_nothing_while_the_pen_is_hidden() {
+    let original = initial_pixels();
+    for (name, target, regs) in pen_gated_shape_imports() {
+        let shown = prepared_shape_pixels(
+            target.clone(),
+            regs,
+            GRAY,
+            (WHOLE_PORT, WHOLE_PORT),
+            write_test_polygon,
+        );
+        assert_ne!(
+            shown, original,
+            "{name} ({target:?}) must draw with pnVis 0"
+        );
+        let hidden = prepared_shape_pixels(
+            target.clone(),
+            regs,
+            GRAY,
+            (WHOLE_PORT, WHOLE_PORT),
+            |loaded| {
+                write_test_polygon(loaded);
+                hide_pen(loaded);
+            },
+        );
+        assert_eq!(hidden, original, "{name} ({target:?}) drew with pnVis -1");
+    }
+}
+
+#[test]
+fn open_rgn_still_records_shapes_while_the_pen_is_hidden() {
+    let pixels = initial_pixels();
+    let fixture = fixture(&pixels, WHOLE_PORT, WHOLE_PORT);
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"OpenRgn")).unwrap();
+    install_port(&mut loaded, &fixture, 8);
+    ppc_write_rect(&mut loaded.memory, RECT, -1, 2, 6, 11).unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewRgn);
+    let destination = loaded.cpu.gpr[3];
+    assert_ne!(destination, 0);
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::OpenRgn);
+    let pn_vis = |loaded: &mut PpcLoadedApp| {
+        loaded
+            .memory
+            .read_u16_be(PORT + PPC_CGRAF_PORT_PN_VIS_OFFSET)
+            .map(|value| value as i16)
+    };
+    assert_eq!(pn_vis(&mut loaded), Some(-1), "OpenRgn hides the pen");
+    // FrameRect adds its rectangle to the open region; PaintRect does not
+    // record into regions, and neither may draw.
+    for target in [
+        PpcImportDispatcherTarget::FrameRect,
+        PpcImportDispatcherTarget::PaintRect,
+    ] {
+        loaded.cpu.gpr[3] = RECT;
+        run_test_import(&mut loaded, target);
+    }
+    loaded.cpu.gpr[3] = destination;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CloseRgn);
+
+    assert_eq!(read_pixels(&mut loaded, pixels.len()), pixels);
+    assert_eq!(pn_vis(&mut loaded), Some(0), "CloseRgn shows the pen");
+    let storage = ppc_region_storage(&mut loaded.memory, destination).unwrap();
+    assert_eq!(storage, region_storage_bytes((-1, 2, 6, 11), &[]));
+}

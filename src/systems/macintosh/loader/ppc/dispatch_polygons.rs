@@ -90,7 +90,7 @@ pub(super) fn dispatch_polygon_import(
         PpcImportDispatcherTarget::PaintPoly => {
             if toolbox_startup.open_region_port == current_gworld {
                 ppc_open_region_include_polygon(toolbox_startup, memory, cpu.gpr[3]);
-            } else {
+            } else if !ppc_port_pen_hidden(memory, current_gworld) {
                 let _ = ppc_paint_polygon(
                     memory,
                     gworlds,
@@ -105,7 +105,7 @@ pub(super) fn dispatch_polygon_import(
         PpcImportDispatcherTarget::FillPoly => {
             if toolbox_startup.open_region_port == current_gworld {
                 ppc_open_region_include_polygon(toolbox_startup, memory, cpu.gpr[3]);
-            } else {
+            } else if !ppc_port_pen_hidden(memory, current_gworld) {
                 let mut pattern = [0u8; 8];
                 if memory.read_bytes_into(cpu.gpr[4], &mut pattern).is_some() {
                     let _ = ppc_fill_polygon_pattern(
@@ -133,7 +133,7 @@ pub(super) fn dispatch_polygon_import(
             // Imaging With QuickDraw (1994), p. 3-84.
             if toolbox_startup.open_region_port == current_gworld {
                 ppc_open_region_include_polygon(toolbox_startup, memory, cpu.gpr[3]);
-            } else {
+            } else if !ppc_port_pen_hidden(memory, current_gworld) {
                 let _ = ppc_paint_polygon(
                     memory,
                     gworlds,
