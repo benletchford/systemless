@@ -67,6 +67,7 @@ impl PresentationSlot {
                         value,
                         indices: vec![value; (p.scale * p.scale) as usize],
                         ink: HashMap::default(),
+                        dimmed: false,
                     };
                     for sy in 0..p.scale {
                         for sx in 0..p.scale {

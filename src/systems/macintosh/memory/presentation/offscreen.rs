@@ -177,6 +177,7 @@ impl Chunk {
             value: self.values[slot],
             indices: self.indices[slot * TILE_SAMPLES..slot * TILE_SAMPLES + len].to_vec(),
             ink,
+            dimmed: false,
         });
         let mut shared = self.shared.borrow_mut();
         if shared.is_empty() {
@@ -1051,6 +1052,7 @@ mod tests {
                     )
                 })
                 .collect(),
+            dimmed: false,
         })
     }
 
@@ -1264,6 +1266,7 @@ mod tests {
                         value: 7,
                         indices: vec![7; 16],
                         ink: HashMap::default(),
+                        dimmed: false,
                     });
                     model_cell
                         .ink
