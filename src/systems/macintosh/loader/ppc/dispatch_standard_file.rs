@@ -1405,7 +1405,7 @@ fn ppc_standard_file_draw_list(
             (left + PPC_STANDARD_FILE_GET_NAME_INSET, row_top + 11),
             &name,
             if is_selected { PPC_RGB_WHITE } else { PPC_RGB_BLACK },
-            None,
+            Some((row_top, left + PPC_STANDARD_FILE_GET_NAME_INSET, row_bottom, right - 3)),
         );
     }
 }

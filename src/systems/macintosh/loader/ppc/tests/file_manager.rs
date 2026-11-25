@@ -3625,6 +3625,34 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn save_list_clips_wide_folder_names() {
+        fn outside_list(name: &[u8]) -> Vec<Option<u16>> {
+            let pef = synthetic_pef_with_import(b"StandardPutFile");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.set_ui_theme(UiThemeId::ClassicSystem7);
+            start_put_dialog_with_saves_folder(&mut loaded);
+            let mut tracking = loaded.toolbox_startup.standard_file_put_tracking.clone().unwrap();
+            tracking.entries.truncate(1);
+            tracking.entries[0].name = name.to_vec();
+            ppc_standard_file_draw_put_dialog(&mut loaded.memory, &loaded.gworlds, &tracking);
+            let (top, left, _, _) = tracking.bounds;
+            let mut pixels = Vec::new();
+            for y in 40..54 {
+                for x in 252..340 {
+                    pixels.push(ppc_quickdraw_read_pixel(
+                        &mut loaded.memory, tracking.front_buffer,
+                        (i32::from(left + x), i32::from(top + y)),
+                    ));
+                }
+            }
+            pixels
+        }
+        let short = outside_list(b"W");
+        let wide = outside_list(&[b'W'; 31]);
+        assert_eq!(short.iter().zip(wide).filter(|(a,b)| **a != *b).count(), 0);
+    }
+
+    #[test]
     fn classic_put_dialog_draws_the_68k_package_geometry() {
         // The PowerPC put dialog draws as the 68K Standard File package does:
         // plainDBox's frame one pixel outside the dialog, the name field's
