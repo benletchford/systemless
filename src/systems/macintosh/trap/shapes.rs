@@ -700,7 +700,17 @@ impl super::TrapDispatcher {
             }
         }
         let (pen_h, pen_w) = self.pn_size;
-        self.draw_generic_shape(cpu, bus, r, op, true, |y, x| {
+        // A frame covers nothing inside the pen-inset rectangle: exactly the
+        // pixels the closure below rejects, with the same wrapping arithmetic.
+        let hollow = matches!(op, ShapeOp::Frame)
+            .then(|| Rect {
+                top: r.top.wrapping_add(pen_h),
+                left: r.left.wrapping_add(pen_w),
+                bottom: r.bottom.wrapping_sub(pen_h),
+                right: r.right.wrapping_sub(pen_w),
+            })
+            .filter(|h| h.top < h.bottom && h.left < h.right);
+        self.draw_hollow_shape_with_geometry(cpu, bus, r, op, true, None, None, hollow, |y, x| {
             if y < r.top || y >= r.bottom || x < r.left || x >= r.right {
                 return 0;
             }
@@ -1416,6 +1426,7 @@ impl super::TrapDispatcher {
         );
     }
 
+    #[inline(always)]
     fn draw_generic_shape_with_geometry<C: CpuOps, F>(
         &mut self,
         cpu: &mut C,
@@ -1429,7 +1440,7 @@ impl super::TrapDispatcher {
     ) where
         F: Fn(i16, i16) -> u8,
     {
-        self.draw_generic_shape_pixels(
+        self.draw_hollow_shape_with_geometry(
             cpu,
             bus,
             r,
@@ -1437,10 +1448,29 @@ impl super::TrapDispatcher {
             full_rect_coverage,
             shape_rows,
             polygon_edges,
+            None,
             coverage_at,
         );
-        // `draw_generic_shape_pixels` sets this for a partial-pattern patBic
-        // paint, and it lasts only for that shape.
+    }
+
+    /// `draw_generic_shape_with_geometry` for a shape known to cover nothing
+    /// inside `hollow`: on the rows it spans, the per-pixel scan skips that
+    /// rectangle's columns before any clip or coverage test.
+    fn draw_hollow_shape_with_geometry<C: CpuOps, F>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        r: &Rect,
+        op: ShapeOp,
+        full_rect_coverage: bool,
+        shape_rows: Option<super::quickdraw::RegionMembershipCache>,
+        polygon_edges: Option<Vec<[f32; 4]>>,
+        hollow: Option<Rect>,
+        coverage_at: F,
+    ) where
+        F: Fn(i16, i16) -> u8,
+    {
+        self.draw_generic_shape_pixels(cpu, bus, r, op, full_rect_coverage, shape_rows, polygon_edges, hollow, coverage_at);
         if let Some(mut p) = bus.presentation.as_mut() {
             p.dimming_text = None;
         }
@@ -1455,6 +1485,7 @@ impl super::TrapDispatcher {
         full_rect_coverage: bool,
         shape_rows: Option<super::quickdraw::RegionMembershipCache>,
         polygon_edges: Option<Vec<[f32; 4]>>,
+        hollow: Option<Rect>,
         coverage_at: F,
     ) where
         F: Fn(i16, i16) -> u8,
@@ -2588,7 +2619,16 @@ impl super::TrapDispatcher {
                     );
                 }
             }
+            // `hollow` has no coverage, so its columns are skipped before any
+            // clip or coverage test on the rows it spans.
+            let (skip_left, skip_right) = match hollow {
+                Some(h) if !glyph_detail && y >= h.top && y < h.bottom => (h.left, h.right),
+                _ => (r.right, r.right),
+            };
             for x in r.left..r.right {
+                if x >= skip_left && x < skip_right {
+                    continue;
+                }
                 let alpha = if glyph_detail {
                     // The clip and coverage as the runs above took them.
                     let Some(alpha) = row_coverage[(x - r.left) as usize] else {
@@ -2894,6 +2934,209 @@ mod tests {
         shape_palette_index_for_rgb, OneBitInks,
     };
     use crate::memory::{MacMemoryBus, MemoryBus};
+
+    #[test]
+    fn frame_rect_skips_its_interior_yet_writes_what_a_full_scan_writes() {
+        use crate::trap::test_helpers::{on_8bpp_68k_port, setup_with_port, IndexedPortFixture};
+        use crate::trap::types::{Rect, ShapeOp};
+        const STOP: i16 = 0x7FFF;
+        // The frame closure, scanned over the whole rectangle with no hollow.
+        fn full_scan<C: crate::cpu::CpuOps>(
+            d: &mut crate::trap::TrapDispatcher,
+            cpu: &mut C,
+            bus: &mut MacMemoryBus,
+            r: Rect,
+        ) {
+            let (pen_h, pen_w) = d.pn_size;
+            d.draw_generic_shape(cpu, bus, &r, ShapeOp::Frame, true, |y, x| {
+                let inside = y >= r.top
+                    && y < r.bottom
+                    && x >= r.left
+                    && x < r.right
+                    && (y < r.top + pen_h
+                        || y >= r.bottom - pen_h
+                        || x < r.left + pen_w
+                        || x >= r.right - pen_w);
+                if inside {
+                    255
+                } else {
+                    0
+                }
+            });
+        }
+        let pixels: Vec<u8> = (0..50 * 12).map(|i| (i * 37 + 11) as u8).collect();
+        // visRgn notched at row 2, clipRgn with a hole at rows 1..4.
+        let fixture = IndexedPortFixture {
+            bounds: (-3, -5, 9, 19),
+            row_bytes: 50,
+            pixels: &pixels,
+            fg_index: 103,
+            bg_index: 42,
+            vis: (
+                (-1, -3, 7, 16),
+                &[
+                    -1, -3, 16, STOP, 2, 10, 12, STOP, 3, 10, 12, STOP, 7, -3, 16, STOP, STOP,
+                ],
+            ),
+            clip: (
+                (-2, -4, 8, 17),
+                &[
+                    -2, -4, 17, STOP, 1, 3, 8, STOP, 4, 3, 8, STOP, 8, -4, 17, STOP, STOP,
+                ],
+            ),
+        };
+        let rects = [
+            (-3, -5, 9, 19),
+            (-2, -4, 8, 17),
+            (0, 1, 5, 12),
+            (1, 2, 2, 3),
+        ];
+        let pens = [(1, 1), (2, 3), (0, 0), (-1, -2), (7, 9), (1, 30)];
+        for (top, left, bottom, right) in rects {
+            let r = Rect {
+                top,
+                left,
+                bottom,
+                right,
+            };
+            for pen in pens {
+                let skipped = on_8bpp_68k_port(&fixture, |d, cpu, bus| {
+                    d.pn_size = pen;
+                    d.draw_rect(cpu, bus, &r, ShapeOp::Frame);
+                });
+                let scanned = on_8bpp_68k_port(&fixture, |d, cpu, bus| {
+                    d.pn_size = pen;
+                    full_scan(d, cpu, bus, r);
+                });
+                assert_eq!(skipped, scanned, "8-bpp rect {r:?} pen {pen:?}");
+                if pen == (1, 1) && (top, left, bottom, right) == (0, 1, 5, 12) {
+                    assert_ne!(skipped, pixels, "8-bpp rect {r:?} draws a frame");
+                }
+            }
+        }
+        // The 1-bpp screen port takes the same per-pixel scan.
+        for pen in pens {
+            let r = Rect {
+                top: 10,
+                left: 13,
+                bottom: 40,
+                right: 61,
+            };
+            let mut screens = Vec::new();
+            for full in [false, true] {
+                let (mut d, mut cpu, mut bus) = setup_with_port();
+                let base = bus.read_long(0x0824);
+                bus.write_bytes(base, &vec![0x5A; 64 * 342]);
+                d.pn_size = pen;
+                if full {
+                    full_scan(&mut d, &mut cpu, &mut bus, r);
+                } else {
+                    d.draw_rect(&mut cpu, &mut bus, &r, ShapeOp::Frame);
+                }
+                screens.push(bus.read_bytes(base, 64 * 342));
+            }
+            assert_eq!(screens[0], screens[1], "1-bpp pen {pen:?}");
+        }
+    }
+
+    #[test]
+    fn frame_rect_tests_coverage_only_on_its_border() {
+        use crate::trap::test_helpers::setup_with_port;
+        use crate::trap::types::{Rect, ShapeOp};
+        // A 200x100 frame with a 1-pixel pen on the 512x342 1-bpp screen.
+        let r = Rect {
+            top: 20,
+            left: 30,
+            bottom: 120,
+            right: 230,
+        };
+        let hollow = Rect {
+            top: 21,
+            left: 31,
+            bottom: 119,
+            right: 229,
+        };
+        let mut counts = Vec::new();
+        for hollow in [None, Some(hollow)] {
+            let (mut d, mut cpu, mut bus) = setup_with_port();
+            let tested = std::cell::Cell::new(0u32);
+            d.draw_hollow_shape_with_geometry(
+                &mut cpu,
+                &mut bus,
+                &r,
+                ShapeOp::Frame,
+                true,
+                None,
+                None,
+                hollow,
+                |y, x| {
+                    tested.set(tested.get() + 1);
+                    let edge = y == r.top || y == r.bottom - 1 || x == r.left || x == r.right - 1;
+                    if edge {
+                        255
+                    } else {
+                        0
+                    }
+                },
+            );
+            counts.push(tested.get());
+        }
+        assert_eq!(counts, [200 * 100, 2 * 200 + 2 * 98]);
+    }
+
+    /// `cargo test --release --lib frame_rect_scan_time -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn frame_rect_scan_time() {
+        use crate::trap::test_helpers::setup_with_port;
+        use crate::trap::types::{Rect, ShapeOp};
+        let r = Rect {
+            top: 0,
+            left: 0,
+            bottom: 342,
+            right: 512,
+        };
+        for (name, hollow) in [
+            ("full scan", None),
+            (
+                "hollow",
+                Some(Rect {
+                    top: 1,
+                    left: 1,
+                    bottom: 341,
+                    right: 511,
+                }),
+            ),
+        ] {
+            let (mut d, mut cpu, mut bus) = setup_with_port();
+            let start = std::time::Instant::now();
+            for _ in 0..200 {
+                d.draw_hollow_shape_with_geometry(
+                    &mut cpu,
+                    &mut bus,
+                    &r,
+                    ShapeOp::Frame,
+                    true,
+                    None,
+                    None,
+                    hollow,
+                    |y, x| {
+                        let edge =
+                            y == r.top || y == r.bottom - 1 || x == r.left || x == r.right - 1;
+                        if edge {
+                            255
+                        } else {
+                            0
+                        }
+                    },
+                );
+            }
+            println!(
+                "512x342 FrameRect, {name}: {:?} per draw",
+                start.elapsed() / 200
+            );
+        }
+    }
 
     #[test]
     fn drawing_without_an_a5_port_uses_the_current_port() {
