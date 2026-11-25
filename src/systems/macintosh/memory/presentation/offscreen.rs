@@ -117,6 +117,31 @@ impl Chunk {
                 }))
     }
 
+    /// Call `visit(colour, own)` for the cell's byte (`own`) and for each
+    /// other colour its samples or ink show (repeats included).
+    fn visit_colours(&self, slot: usize, mut visit: impl FnMut(u8, bool)) {
+        let value = self.values[slot];
+        visit(value, true);
+        let start = slot * TILE_SAMPLES;
+        for &index in &self.indices[start..start + usize::from(self.lens[slot])] {
+            if index != value {
+                visit(index, false);
+            }
+        }
+        if self.may_have_ink(slot) {
+            for (_, ink) in self.slot_ink(slot).iter() {
+                if ink.foreground != value {
+                    visit(ink.foreground, false);
+                }
+                if let super::IndexedColor::Solid(background) = ink.background {
+                    if background != value {
+                        visit(background, false);
+                    }
+                }
+            }
+        }
+    }
+
     fn may_have_ink(&self, slot: usize) -> bool {
         self.inked[slot / 64] & (1 << (slot % 64)) != 0
     }
@@ -456,6 +481,8 @@ pub(super) struct OffscreenDetail {
     /// `run_bounds_rebuild_at.max(MAX_RUNS)`, when it is rebuilt from the
     /// cells' tags.
     run_bounds: HashMap<u32, (u32, u32)>,
+    /// The runs guest stores have changed pixels of.
+    damage: HashMap<u32, RunDamage>,
     /// Next `run_bounds.len()` threshold that triggers a rebuild. Doubles the
     /// surviving live count when live runs stay above `MAX_RUNS` so rebuilds
     /// remain amortized O(1) per run.
@@ -467,6 +494,17 @@ pub(super) struct OffscreenDetail {
     /// holds no cell. Most copies read and write pages that never held
     /// detail; this lets them skip the chunk map entirely.
     pages: Vec<u64>,
+}
+
+/// What guest stores have changed of a run.
+#[derive(Clone, Copy)]
+struct RunDamage {
+    /// The first and last address changed. The run's cells between them
+    /// are gone.
+    span: (u32, u32),
+    /// Two of its remaining cells that show it still holds text (see
+    /// `text_witness`), checked again before scanning for others.
+    witness: (u32, u32),
 }
 
 fn split(address: u32) -> (u32, usize) {
@@ -584,6 +622,8 @@ impl OffscreenDetail {
                 }
             }
         }
+        let run_bounds = &self.run_bounds;
+        self.damage.retain(|run, _| run_bounds.contains_key(run));
     }
 
     /// Whether a cell in `[from, from + len)` may have changed since
@@ -619,6 +659,114 @@ impl OffscreenDetail {
         }
         self.count -= removed;
         removed
+    }
+
+    /// Remove `run`'s cells in `[from, to)`.
+    fn remove_run_cells(&mut self, run: u32, from: u32, to: u32) {
+        if from >= to {
+            return;
+        }
+        let mut removed = 0;
+        for (&key, chunk) in self
+            .chunks
+            .range_mut(from >> CHUNK_SHIFT..=(to - 1) >> CHUNK_SHIFT)
+        {
+            let base = key << CHUNK_SHIFT;
+            let first = from.saturating_sub(base).min(CHUNK_BYTES as u32) as usize;
+            let end = (to - base).min(CHUNK_BYTES as u32) as usize;
+            for slot in first..end {
+                if chunk.runs[slot] == run && chunk.has(slot) {
+                    chunk.clear(slot);
+                    removed += 1;
+                }
+            }
+        }
+        self.count -= removed;
+    }
+
+    /// Whether `address` holds a cell of `run`.
+    fn holds_run_cell(&self, address: u32, run: u32) -> bool {
+        let (key, slot) = split(address);
+        self.chunks
+            .get(&key)
+            .is_some_and(|chunk| chunk.has(slot) && chunk.runs[slot] == run)
+    }
+
+    /// Two remaining cells of `run` showing it still holds text: the first's
+    /// byte is a colour the second shows only in its samples. Text over a
+    /// background leaves cells whose byte is the ink with background
+    /// samples, and cells whose byte is the background with ink samples.
+    /// Erasing it to the background changes every ink byte; filling it with
+    /// the ink changes every background byte. Either way the cells left all
+    /// show the same side, and would draw only the old glyphs' edges.
+    /// The scan starts from the end of the run farther from `changed`, where
+    /// a store sweeping across the run reaches last.
+    fn text_witness(&mut self, run: u32, changed: u32) -> Option<(u32, u32)> {
+        self.settle_run();
+        let &(from, last) = self.run_bounds.get(&run)?;
+        let backward = changed.saturating_sub(from) <= last.saturating_sub(changed);
+        let mut own_at = [None::<u32>; 256];
+        let mut other_at = [None::<u32>; 256];
+        let mut visit = |address: u32, chunk: &Chunk, slot: usize| {
+            if chunk.runs[slot] != run {
+                return None;
+            }
+            let mut witness = None;
+            chunk.visit_colours(slot, |colour, own| {
+                let (mine, theirs) = if own {
+                    (&mut own_at, &other_at)
+                } else {
+                    (&mut other_at, &own_at)
+                };
+                if witness.is_none() {
+                    if let Some(held) = theirs[usize::from(colour)].filter(|&held| held != address)
+                    {
+                        witness = Some(if own {
+                            (address, held)
+                        } else {
+                            (held, address)
+                        });
+                    }
+                }
+                mine[usize::from(colour)].get_or_insert(address);
+            });
+            witness
+        };
+        let chunks = self.chunks.range(from >> CHUNK_SHIFT..=last >> CHUNK_SHIFT);
+        if backward {
+            for (&key, chunk) in chunks.rev() {
+                for word in (0..MASK_WORDS).rev() {
+                    let mut bits = chunk.present[word];
+                    while bits != 0 {
+                        let bit = 63 - bits.leading_zeros() as usize;
+                        bits &= !(1 << bit);
+                        let slot = word * 64 + bit;
+                        if let Some(witness) =
+                            visit((key << CHUNK_SHIFT) | slot as u32, chunk, slot)
+                        {
+                            return Some(witness);
+                        }
+                    }
+                }
+            }
+        } else {
+            for (&key, chunk) in chunks {
+                for word in 0..MASK_WORDS {
+                    let mut bits = chunk.present[word];
+                    while bits != 0 {
+                        let bit = bits.trailing_zeros() as usize;
+                        bits &= bits - 1;
+                        let slot = word * 64 + bit;
+                        if let Some(witness) =
+                            visit((key << CHUNK_SHIFT) | slot as u32, chunk, slot)
+                        {
+                            return Some(witness);
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Remove every remaining cell of each run in `runs`, returning how many.
@@ -709,11 +857,11 @@ impl OffscreenDetail {
             return false;
         }
         let mut removed = false;
-        // A changed pixel ends its whole run: the run's other cells may still
-        // hold bytes the new picture happens to share.
-        let mut runs = Vec::new();
+        // The first and last address changed of each run.
+        let mut runs: Vec<(u32, (u32, u32))> = Vec::new();
         for (offset, &byte) in bytes.iter().enumerate() {
-            let (key, slot) = split(from + offset as u32);
+            let address = from + offset as u32;
+            let (key, slot) = split(address);
             let Some(chunk) = self.chunks.get_mut(&key) else {
                 continue;
             };
@@ -722,13 +870,44 @@ impl OffscreenDetail {
                 chunk.clear(slot);
                 self.count -= 1;
                 removed = true;
-                if run != 0 && !runs.contains(&run) {
-                    runs.push(run);
+                if run != 0 {
+                    match runs.iter_mut().find(|(held, _)| *held == run) {
+                        Some((_, span)) => span.1 = address,
+                        None => runs.push((run, (address, address))),
+                    }
                 }
             }
         }
-        if !runs.is_empty() {
-            self.remove_runs(&runs);
+        // The run's other cells may still hold bytes the new picture happens
+        // to share. What changed the run covers the rows between its first
+        // and last changed pixel, so the run's cells there go too: a picture
+        // drawn over the whole text, or the background restored under it,
+        // takes all of it, and something drawn in front of a few of its rows
+        // (a sprite passing over it) leaves the others sharp. If what is
+        // left shows no text, the run goes whole.
+        let mut ended = Vec::new();
+        for (run, (first, last)) in runs {
+            let damage = self.damage.get(&run).copied();
+            let (old_first, old_last) = damage.map_or((first, first), |damage| damage.span);
+            let span = (first.min(old_first), last.max(old_last));
+            self.remove_run_cells(run, span.0, old_first);
+            self.remove_run_cells(run, old_last.saturating_add(1), span.1.saturating_add(1));
+            let witness = damage
+                .map(|damage| damage.witness)
+                .filter(|&(a, b)| self.holds_run_cell(a, run) && self.holds_run_cell(b, run))
+                .or_else(|| self.text_witness(run, first));
+            match witness {
+                Some(witness) => {
+                    self.damage.insert(run, RunDamage { span, witness });
+                }
+                None => {
+                    self.damage.remove(&run);
+                    ended.push(run);
+                }
+            }
+        }
+        if !ended.is_empty() {
+            self.remove_runs(&ended);
         }
         removed
     }
@@ -1107,6 +1286,115 @@ mod tests {
         assert!(store.remove_changed(0x10f3, &[6]));
         assert!(store.contains(0x10f2));
         assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn a_run_partly_drawn_over_keeps_the_rows_that_still_show_it() {
+        // Ink 9 over background 5, in three rows 0x100 apart: in each, a cell
+        // whose byte is the ink, with background samples, and one whose byte
+        // is the background, with ink samples.
+        let fresh = || {
+            let mut store = OffscreenDetail::default();
+            store.set_run(1);
+            for row in [0x4000, 0x4100, 0x4200] {
+                store.insert(row, &cell(9, &[9, 9, 9, 5], &[]));
+                store.insert(row + 1, &cell(5, &[5, 9, 5, 5], &[]));
+            }
+            store.set_run(0);
+            store
+        };
+        // Something drawn over the first row takes only that row.
+        let mut store = fresh();
+        assert!(store.remove_changed(0x4000, &[7, 7]));
+        assert_eq!(store.len(), 4);
+        // Over the first and last, it takes the rows between as well.
+        assert!(store.remove_changed(0x4201, &[7]));
+        assert_eq!(store.len(), 0);
+        // Erasing to the background changes only the ink bytes; the edges
+        // left would show nothing but the old glyphs' outline, so they go.
+        let mut store = fresh();
+        for row in [0x4000, 0x4100, 0x4200] {
+            assert!(store.remove_changed(row, &[5, 5]));
+        }
+        assert_eq!(store.len(), 0);
+        // Filling with the ink changes only the edge bytes, and likewise.
+        let mut store = fresh();
+        for row in [0x4000, 0x4100, 0x4200] {
+            assert!(store.remove_changed(row, &[9, 9]));
+        }
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn a_picture_drawn_over_the_whole_run_leaves_no_glyph_edges() {
+        // Ink 9 over background 5 in three rows, as in the test above.
+        let mut store = OffscreenDetail::default();
+        store.set_run(1);
+        for row in [0x4000, 0x4100, 0x4200] {
+            store.insert(row, &cell(9, &[9, 9, 9, 5], &[]));
+            store.insert(row + 1, &cell(5, &[5, 9, 5, 5], &[]));
+        }
+        store.set_run(0);
+        // A new picture over all of it happens to match some bytes: the ink
+        // byte on the first and last rows, the background byte on the
+        // middle one. The cells left would still hold both kinds, but they
+        // describe glyphs that are gone.
+        store.remove_changed(0x4000, &[9, 7]);
+        store.remove_changed(0x4100, &[7, 5]);
+        store.remove_changed(0x4200, &[9, 7]);
+        assert_eq!(store.len(), 0);
+    }
+
+    /// Cost of guest code erasing a band of retained text one byte at a
+    /// time. Run with `cargo test --release --lib erase_bench -- --ignored
+    /// --nocapture`.
+    #[test]
+    #[ignore = "measurement"]
+    fn erase_bench_byte_stores_over_a_text_band() {
+        const ROW_BYTES: u32 = 656;
+        const WIDTH: u32 = 640;
+        const ROWS: u32 = 12;
+        const BASE: u32 = 0x0100_0000;
+        // Ink 9 cells with background samples beside background 5 cells
+        // with ink samples, both with partial-coverage ink.
+        let ink = cell(9, &[&[9; 12][..], &[5; 4]].concat(), &[(12, 9)]);
+        let edge = cell(5, &[&[5; 12][..], &[9; 4]].concat(), &[(0, 9)]);
+        // One run across the band, or one run per 16-pixel word, erased
+        // from the top or from the bottom.
+        for (run_width, upward) in [(WIDTH, false), (WIDTH, true), (16, false), (16, true)] {
+            let mut timings = Vec::new();
+            for _ in 0..5 {
+                let mut store = OffscreenDetail::default();
+                for left in (0..WIDTH).step_by(run_width as usize) {
+                    store.begin_run();
+                    for row in 0..ROWS {
+                        for x in left..left + run_width {
+                            let address = BASE + row * ROW_BYTES + x;
+                            let cell = if (x + row) % 2 == 0 { &ink } else { &edge };
+                            store.insert(address, cell);
+                        }
+                    }
+                }
+                store.set_run(0);
+                let stores = ROWS * ROW_BYTES;
+                let start = std::time::Instant::now();
+                for offset in 0..stores {
+                    let offset = if upward { stores - 1 - offset } else { offset };
+                    store.remove_changed(BASE + offset, &[5]);
+                }
+                let elapsed = start.elapsed();
+                assert_eq!(store.len(), 0);
+                timings.push(elapsed);
+            }
+            timings.sort();
+            let median = timings[timings.len() / 2];
+            let stores = ROWS * ROW_BYTES;
+            eprintln!(
+                "erase_bench run_width={run_width} upward={upward} stores={stores} median_total={:.3} ms per_store={:.3} us",
+                median.as_secs_f64() * 1e3,
+                median.as_secs_f64() * 1e6 / f64::from(stores),
+            );
+        }
     }
 
     #[test]

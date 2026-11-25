@@ -3196,10 +3196,12 @@ fn import_runner_keeps_text_detail_through_guest_stores_of_unchanged_bytes() {
 }
 
 #[test]
-fn a_guest_store_that_changes_copied_text_drops_everything_that_copy_brought() {
+fn a_guest_store_that_erases_copied_text_drops_everything_that_copy_brought() {
     // Text copied from one 8-bit offscreen buffer to another is one run in
-    // the destination: a guest store that changes any of its pixels removes
-    // all of its detail there, also where the bytes stay the same.
+    // the destination: a guest store that erases it removes all of its
+    // detail there, also where the bytes stay the same. A store that changes
+    // only some of its pixels, as something drawn over part of it, removes
+    // only theirs.
     use crate::memory::{MacMemoryBus, MemoryBus};
     const SCREEN: u32 = 0x3000;
     const OFFSCREEN: u32 = 0x1000;
@@ -3292,6 +3294,21 @@ fn a_guest_store_that_changes_copied_text_drops_everything_that_copy_brought() {
     held[changed] ^= 1;
     loaded.memory.presentation().set_guest_stores(true);
     loaded.memory.write_bytes(COPY, &held).unwrap();
+    loaded.memory.presentation().set_guest_stores(false);
+    assert!(!bus.test_has_detail(copied[0]));
+    let left_over = copied
+        .iter()
+        .filter(|&&address| bus.test_has_detail(address))
+        .count();
+    assert_eq!(
+        left_over,
+        copied.len() - 1,
+        "the rest of the text keeps its detail"
+    );
+    // Guest code then erases the copy to its background, which leaves the
+    // bytes of the glyphs' edges as they were.
+    loaded.memory.presentation().set_guest_stores(true);
+    loaded.memory.write_bytes(COPY, &indexed).unwrap();
     loaded.memory.presentation().set_guest_stores(false);
     let left_over = copied.iter().filter(|&&address| bus.test_has_detail(address)).count();
     assert_eq!(left_over, 0, "detail the copy brought survived");
