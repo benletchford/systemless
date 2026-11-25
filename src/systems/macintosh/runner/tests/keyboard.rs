@@ -405,8 +405,16 @@ fn native_keyboard_preferences_control_initial_delay_and_repeat_rate() {
         let expected: &[u32] = match tick {
             1 | 2 => &[],
             3 | 4 => &[103],
-            _ => &[103, 105],
+            _ => &[105],
         };
         assert_eq!(repeats, expected);
+        if tick == 4 {
+            // The application consumes the first repeat; an undelivered one
+            // would otherwise stand for the next.
+            runner
+                .process_context
+                .event_queue()
+                .with_mut(|queue| queue.retain(|event| event.what != 5));
+        }
     }
 }

@@ -322,6 +322,43 @@ fn elapsed_autokey_is_delivered_before_the_keyup_that_follows_it() {
 }
 
 #[test]
+fn repeats_do_not_accumulate_between_slow_polls() {
+    // An application that polls once per several repeat intervals sees one
+    // pending repeat, then the keyUp, not every repeat that fell due.
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.set_sent_open_app_event_for_test(true);
+    let system_event_mask = bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK) | (1 << 4);
+    bus.write_word(
+        crate::memory::globals::addr::SYS_EVT_MASK,
+        system_event_mask,
+    );
+    let rate = bus.read_word(crate::memory::globals::addr::KEY_REP_THRESH);
+
+    disp.push_key_down(0x7C, 0x1D);
+    let (what, _, _, _, _, _, _) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+    assert_eq!(what, 3);
+    let mut tick = disp
+        .current_tick()
+        .wrapping_add(TrapDispatcher::AUTO_KEY_THRESHOLD_TICKS);
+    for _ in 0..8 {
+        disp.set_tick_count_for_test(&mut bus, tick);
+        disp.post_auto_key_if_due(system_event_mask, rate);
+        tick = tick.wrapping_add(u32::from(rate));
+    }
+    disp.push_key_up_with_system_event_mask(system_event_mask, 0x7C, 0x1D);
+
+    let mut delivered = Vec::new();
+    for _ in 0..3 {
+        let (what, message, _, _, _, _, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+        if has_event && what != 0 {
+            delivered.push((what, message));
+        }
+    }
+    assert_eq!(delivered, [(5, 0x0000_7C1D), (4, 0x0000_7C1D)]);
+}
+
+#[test]
 fn keyup_only_dequeue_retires_earlier_autokeys_for_that_key_only() {
     let (mut disp, mut cpu, mut bus) = setup();
     disp.set_sent_open_app_event_for_test(true);
