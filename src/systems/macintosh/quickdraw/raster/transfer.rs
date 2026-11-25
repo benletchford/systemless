@@ -46,16 +46,10 @@ pub(crate) fn apply_bit_row_op<M: RasterMemory>(
     };
     if first_byte == last_byte {
         let addr = row_base.wrapping_add(first_byte);
-        let mut edge = [0u8; 1];
-        return memory.modify_row(addr, &mut edge, |byte| {
-            byte[0] = apply(byte[0], head_mask & tail_mask);
-        });
+        return memory.modify_byte(addr, |byte| apply(byte, head_mask & tail_mask));
     }
     let head_addr = row_base.wrapping_add(first_byte);
-    let mut edge = [0u8; 1];
-    memory.modify_row(head_addr, &mut edge, |byte| {
-        byte[0] = apply(byte[0], head_mask);
-    })?;
+    memory.modify_byte(head_addr, |byte| apply(byte, head_mask))?;
     let middle = (last_byte - first_byte - 1) as usize;
     if middle > 0 {
         let middle_addr = head_addr.wrapping_add(1);
@@ -73,9 +67,7 @@ pub(crate) fn apply_bit_row_op<M: RasterMemory>(
         }
     }
     let tail_addr = row_base.wrapping_add(last_byte);
-    memory.modify_row(tail_addr, &mut edge, |byte| {
-        byte[0] = apply(byte[0], tail_mask);
-    })
+    memory.modify_byte(tail_addr, |byte| apply(byte, tail_mask))
 }
 
 /// Applies one of the six read-modify-write 8-bpp boolean transfer modes

@@ -336,7 +336,8 @@ pub(crate) fn paint_rect<M: RasterMemory>(
             let rotate = (run_left - origin_h).rem_euclid(8) as u32;
             let bits = ink.pattern[pat_row].rotate_left(rotate);
             let run_len = (run_right - run_left) as usize;
-            let _ = memory.modify_row(pixel_address(y, run_left), &mut scratch[..run_len], |row| {
+            let addr = pixel_address(y, run_left);
+            let _ = memory.modify_pixel_row(addr, &mut scratch[..run_len], |row| {
                 apply_boolean_row_8(row, bits, ink.mode, fg, bg);
             });
         });

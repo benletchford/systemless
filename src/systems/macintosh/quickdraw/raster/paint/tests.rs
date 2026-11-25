@@ -912,7 +912,21 @@ fn solid_1bpp_rect_matches_reference_and_both_memories() {
             let mut guest_bytes = vec![0u8; byte_len];
             guest.read_bytes_into(surface.base, &mut guest_bytes).unwrap();
             assert_eq!(guest_bytes, expected, "{op:?} {target:?}");
-            assert_eq!(bus_writes, guest_writes, "{op:?} {target:?}");
+            // 68K stores the edge bytes with `write_byte`, as its row loop
+            // always has, and the write log records only `write_bytes`; the
+            // whole bytes between are one logged run on both memories.
+            let first_bit = (target.left.max(surface.bounds.left) - surface.bounds.left) as u32;
+            let end_bit = ((target.right - surface.bounds.left) as u32).min(surface.row_bytes * 8);
+            let is_edge = |addr: u32| {
+                let column = (addr - surface.base) % surface.row_bytes;
+                column == first_bit / 8 || column == (end_bit - 1) / 8
+            };
+            let guest_middle: Vec<_> = guest_writes
+                .iter()
+                .copied()
+                .filter(|&(addr, len)| !(len == 1 && is_edge(addr)))
+                .collect();
+            assert_eq!(bus_writes, guest_middle, "{op:?} {target:?}");
             assert_eq!(
                 guest_notes
                     .iter()
@@ -1020,12 +1034,7 @@ fn m68k_patterned_8bpp_and_solid_1bpp_routes_match_reference_and_bus_policies() 
 
         d.draw_rect(&mut cpu, &mut bus, &target, ShapeOp::Paint);
 
-        let write_hits: Vec<_> = bus
-            .take_access_watch()
-            .unwrap()
-            .into_iter()
-            .filter(|h| h.write)
-            .collect();
+        let hits = bus.take_access_watch().unwrap();
         let probe_ranges = bus.finish_write_probe_ranges();
         let expected_surface = Surface {
             base: BASE,
@@ -1056,17 +1065,14 @@ fn m68k_patterned_8bpp_and_solid_1bpp_routes_match_reference_and_bus_policies() 
         bus_ref.arm_access_watch(BASE, BASE + byte_len_8 as u32);
         let dx = (clipped.left - BOUNDS.1) as usize;
         let w = (clipped.right - clipped.left) as usize;
+        // The 68K row loop this route replaced read each row with
+        // `read_bytes`, which the access watch does not record.
         for y in clipped.top..clipped.bottom {
             let row_off = (y - BOUNDS.0) as usize * usize::from(ROW_BYTES_8) + dx;
+            let _ = bus_ref.read_bytes(BASE + row_off as u32, w);
             bus_ref.write_bytes(BASE + row_off as u32, &expected[row_off..row_off + w]);
         }
-        let ref_writes: Vec<_> = bus_ref
-            .take_access_watch()
-            .unwrap()
-            .into_iter()
-            .filter(|h| h.write)
-            .collect();
-        assert_eq!(write_hits, ref_writes, "mode={qd_mode}");
+        assert_eq!(hits, bus_ref.take_access_watch().unwrap(), "mode={qd_mode}");
         assert_eq!(probe_ranges, bus_ref.finish_write_probe_ranges(), "mode={qd_mode}");
         let (mut c_new, mut c_ref) = (CompactPresentation::default(), CompactPresentation::default());
         assert!(bus.compact_presentation_without_overlays((WIDTH.into(), HEIGHT.into()), &mut c_new));
@@ -1092,9 +1098,74 @@ fn m68k_patterned_8bpp_and_solid_1bpp_routes_match_reference_and_bus_policies() 
         d.pn_pat = [0xFF; 8];
         d.pn_mode = 8;
         d.bk_pat = [0x00; 8];
+        bus.begin_write_probe();
+        bus.arm_access_watch(BASE, BASE + byte_len_1 as u32);
         d.draw_rect(&mut cpu, &mut bus, &target, op);
+        let hits = bus.take_access_watch().unwrap();
+        let probe_ranges = bus.finish_write_probe_ranges();
         let expected =
             reference_solid_1bpp(&surface_1, |x, y| inside(clipped, x, y), expected_bit_op, &seed_1);
         assert_eq!(bus.read_bytes(BASE, byte_len_1), expected, "{expected_bit_op:?}");
+
+        let mut bus_ref = crate::memory::MacMemoryBus::new(0x4_0000);
+        bus_ref.write_bytes(BASE, &seed_1);
+        bus_ref.begin_write_probe();
+        bus_ref.arm_access_watch(BASE, BASE + byte_len_1 as u32);
+        let first_bit = (clipped.left - BOUNDS.1) as u32;
+        let end_bit = (clipped.right - BOUNDS.1) as u32;
+        for y in clipped.top..clipped.bottom {
+            let row_base = BASE + (y - BOUNDS.0) as u32 * u32::from(ROW_BYTES_1);
+            legacy_68k_bit_row_op(&mut bus_ref, row_base, first_bit, end_bit, expected_bit_op);
+        }
+        assert_eq!(bus_ref.read_bytes(BASE, byte_len_1), expected, "{expected_bit_op:?}");
+        assert_eq!(hits, bus_ref.take_access_watch().unwrap(), "{expected_bit_op:?}");
+        assert_eq!(probe_ranges, bus_ref.finish_write_probe_ranges(), "{expected_bit_op:?}");
     }
+}
+
+/// The 68K 1-bpp row operation the shared core replaced, kept to compare
+/// every bus access: `read_byte`/`write_byte` edges, `fill_bytes` for a
+/// solid middle, and `read_bytes_into`/`write_bytes` for an inverted one.
+fn legacy_68k_bit_row_op(
+    bus: &mut crate::memory::MacMemoryBus,
+    row_base: u32,
+    first_bit: u32,
+    end_bit: u32,
+    op: BitRowOp,
+) {
+    use crate::memory::MemoryBus;
+    let first_byte = first_bit / 8;
+    let last_byte = (end_bit - 1) / 8;
+    let head_mask = 0xFFu8 >> (first_bit % 8);
+    let tail_mask = 0xFFu8 << (7 - ((end_bit - 1) % 8));
+    let apply = |old: u8, mask: u8| match op {
+        BitRowOp::Set => old | mask,
+        BitRowOp::Clear => old & !mask,
+        BitRowOp::Toggle => old ^ mask,
+    };
+    if first_byte == last_byte {
+        let addr = row_base + first_byte;
+        bus.write_byte(addr, apply(bus.read_byte(addr), head_mask & tail_mask));
+        return;
+    }
+    let head_addr = row_base + first_byte;
+    bus.write_byte(head_addr, apply(bus.read_byte(head_addr), head_mask));
+    let middle = last_byte - first_byte - 1;
+    if middle > 0 {
+        let middle_addr = head_addr + 1;
+        match op {
+            BitRowOp::Set => bus.fill_bytes(middle_addr, middle, 0xFF),
+            BitRowOp::Clear => bus.fill_bytes(middle_addr, middle, 0x00),
+            BitRowOp::Toggle => {
+                let mut row = vec![0u8; middle as usize];
+                bus.read_bytes_into(middle_addr, &mut row);
+                for byte in row.iter_mut() {
+                    *byte = !*byte;
+                }
+                bus.write_bytes(middle_addr, &row);
+            }
+        }
+    }
+    let tail_addr = row_base + last_byte;
+    bus.write_byte(tail_addr, apply(bus.read_byte(tail_addr), tail_mask));
 }
