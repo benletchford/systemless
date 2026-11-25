@@ -330,7 +330,7 @@ pub(crate) fn seed_fill_68k(
 
 /// Builds `fixture` as the current 8-bit colour port of a 68K dispatcher, runs
 /// `draw` and returns the pixel bytes afterwards.
-fn on_8bpp_68k_port(
+pub(crate) fn on_8bpp_68k_port(
     fixture: &IndexedPortFixture<'_>,
     draw: impl FnOnce(&mut TrapDispatcher, &mut MockCpu, &mut MacMemoryBus),
 ) -> Vec<u8> {
