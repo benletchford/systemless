@@ -1296,7 +1296,13 @@ impl SoundManager {
         out
     }
 
-    fn mix_frame_stereo_frames(&mut self, num_samples: usize) -> Vec<StereoSample> {
+    /// Run the queued commands of every idle channel up to the next one that
+    /// occupies it, queueing callBackCmd callbacks. A channel whose sound has
+    /// just finished reaches its following callBackCmd here, so a host mixer
+    /// that splits at `samples_until_next_exhaustion` can run that callback
+    /// (which commonly submits the next bufferCmd) before mixing past the
+    /// boundary. Inside Macintosh: Sound (1994), pp. 2-130--2-131 and 2-152.
+    pub(crate) fn dispatch_idle_channel_commands(&mut self) {
         // Process queued commands only on idle channels. SndDoCommand feeds
         // the channel FIFO; SndDoImmediate is the bypass path for stopping
         // playback immediately.
@@ -1358,6 +1364,10 @@ impl SoundManager {
             }
         }
         self.pending_sound_callbacks.extend(queued_callbacks);
+    }
+
+    fn mix_frame_stereo_frames(&mut self, num_samples: usize) -> Vec<StereoSample> {
+        self.dispatch_idle_channel_commands();
 
         // Mix all playing channels into the output buffer.
         let mut output = vec![StereoSample::SILENCE; num_samples];

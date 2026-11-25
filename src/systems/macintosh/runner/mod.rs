@@ -5404,6 +5404,14 @@ impl FixtureRunner {
         while remaining_samples > 0 {
             self.try_load_pending_double_buffers();
             self.dispatcher.service_guest_sound_queues(&mut self.bus);
+            // A sound that finished at the previous split reaches its
+            // callBackCmd now. Run native callbacks here, at that sample
+            // boundary, so a callback that submits the next bufferCmd is
+            // heard without a silent gap for the rest of the slice.
+            self.dispatcher
+                .sound_manager
+                .dispatch_idle_channel_commands();
+            self.fire_pending_ppc_sound_completions();
 
             let chunk = self
                 .dispatcher

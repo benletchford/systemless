@@ -3887,6 +3887,10 @@ impl SharedProcessSoundManager {
     pub(crate) fn mix_frame_stereo(&self, num_samples: usize) -> Vec<u8> {
         self.with_mut(|manager| manager.mix_frame_stereo(num_samples))
     }
+
+    pub(crate) fn dispatch_idle_channel_commands(&self) {
+        self.with_mut(SoundManager::dispatch_idle_channel_commands);
+    }
 }
 
 impl SharedProcessCollectionManager {

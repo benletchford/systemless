@@ -1020,6 +1020,92 @@ fn ppc_sound_doubleback_callback_refills_and_plays_exhausted_buffer() {
     );
 }
 
+/// A channel that streams by pairing SndDoImmediate(bufferCmd) with a queued
+/// callBackCmd refills from the callback. The Sound Manager runs that callback
+/// when the buffer completes (Inside Macintosh: Sound (1994), pp. 2-130--2-131
+/// and 2-152), so the next buffer must follow the last sample of the previous
+/// one rather than wait out the rest of the host mix slice in silence.
+#[test]
+fn ppc_buffer_callback_refill_follows_the_exhausted_buffer_without_a_gap() {
+    const CHANNEL: u32 = 0x0300_1000;
+    const CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
+    const COMMAND: u32 = PPC_DATA_BASE + 0x1000;
+    const HEADER: u32 = PPC_DATA_BASE + 0x1100;
+    const FIRST: [u8; 8] = [0x90; 8];
+    const REFILL: u8 = 0xB0;
+
+    let sound = PpcSoundState::default();
+    sound.manager.with_mut(|manager| {
+        manager.register_channel(CHANNEL, true, CALLBACK, CallbackTaskArchitecture::PowerPc);
+        manager.play_buffer_command_for_architecture(
+            CHANNEL,
+            FIRST.to_vec(),
+            crate::sound::OUTPUT_RATE << 16,
+            CallbackTaskArchitecture::PowerPc,
+        );
+        assert!(manager.enqueue_command(
+            CHANNEL,
+            crate::sound::SndCommand {
+                cmd: crate::sound::cmd::CALLBACK,
+                param1: 0,
+                param2: 0,
+            },
+        ));
+    });
+    let mut app = halted_ppc_app_with_sound(sound);
+    let ppc_app = app.ppc.as_mut().expect("PPC app");
+    // The callback receives the channel in r3 and tail-calls
+    // SndDoImmediate(chan, &bufferCmd) for the next buffer.
+    let callback = [
+        0x3c80_0000 | (COMMAND >> 16),    // lis r4,COMMAND@h
+        0x6084_0000 | (COMMAND & 0xffff), // ori r4,r4,COMMAND@l
+        ppc_test_relative_branch(CALLBACK + 8, PPC_IMPORT_TRAP_BASE),
+    ];
+    ppc_app.memory.add_region(
+        CALLBACK,
+        callback.into_iter().flat_map(u32::to_be_bytes).collect(),
+    );
+    // bufferCmd naming a standard SoundHeader with eight inline samples.
+    // Inside Macintosh: Sound (1994), p. 2-104.
+    let mut data = vec![0; 0x200];
+    data[0..2].copy_from_slice(&crate::sound::cmd::BUFFER.to_be_bytes());
+    data[4..8].copy_from_slice(&HEADER.to_be_bytes());
+    let header = 0x100;
+    data[header + 4..header + 8].copy_from_slice(&8u32.to_be_bytes());
+    data[header + 8..header + 12].copy_from_slice(&(crate::sound::OUTPUT_RATE << 16).to_be_bytes());
+    data[header + 21] = 60;
+    data[header + 22..header + 30].fill(REFILL);
+    ppc_app.memory.add_region(COMMAND, data);
+    let mut immediate = test_ppc_import_binding(0, "InterfaceLib", "SndDoImmediate");
+    immediate.address = PPC_IMPORT_TRAP_BASE;
+    immediate.trap_pc = PPC_IMPORT_TRAP_BASE;
+    immediate.dispatcher_target = PpcImportDispatcherTarget::SndDoImmediate;
+    ppc_app.import_count = 1;
+    ppc_app.imports = vec![immediate];
+
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&app);
+    runner.mix_audio(32);
+
+    let mixed = runner.drain_audio();
+    assert_eq!(
+        runner
+            .native
+            .application()
+            .unwrap()
+            .sound
+            .completion_invocations
+            .len(),
+        1
+    );
+    assert_eq!(mixed.get(..8), Some(&FIRST[..]));
+    assert_eq!(
+        mixed.get(8..16),
+        Some(&[REFILL; 8][..]),
+        "refilled buffer must start at the exhausted buffer's end: {mixed:02X?}"
+    );
+}
+
 #[test]
 fn ppc_sound_completion_preserves_callback_rnd_seed_update() {
     const CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
