@@ -6,6 +6,7 @@
 use super::graphics::*;
 use super::regions::*;
 use super::*;
+use crate::quickdraw::raster::memory::RasterMemory;
 use crate::quickdraw::raster::paint::{
     paint_rect, paint_solid_1bpp_rect, supports, ClipRows, Depth, DrawOutcome, Ink, PatternKind,
     Surface, TransferMode, EMPTY_RECT,
@@ -65,6 +66,68 @@ fn ppc_raster_surface(surface: PpcQuickDrawSurface, depth: Depth) -> Surface {
     }
 }
 
+/// How the shared core's row stores fail on PowerPC memory.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum PpcRunWrites {
+    /// One `write_bytes` per run; a run with any unwritable byte is lost
+    /// whole, as the PowerPC FillRect and window-background row writers
+    /// always have at `8` and `16` bits. `1`-bit surfaces, which those
+    /// callers drew pixel by pixel, always take `PerPixelOnFailure`.
+    Whole,
+    /// A run that cannot be stored whole is stored pixel by pixel, so only
+    /// the unreadable or unwritable pixels are lost, as in the per-pixel
+    /// loops of PaintRect, EraseRect, InvertRect and the 1-bit fill.
+    PerPixelOnFailure,
+}
+
+/// PowerPC memory that retries a failed run one pixel (`pixel_len` bytes) at a
+/// time; see [`PpcRunWrites::PerPixelOnFailure`].
+pub(super) struct PpcPixelFallback<'a> {
+    pub(super) memory: &'a mut PpcSectionMem,
+    pub(super) pixel_len: usize,
+}
+
+impl PpcPixelFallback<'_> {
+    fn write_pixels(&mut self, addr: u32, bytes: &[u8], readable: Option<&[bool]>) -> bool {
+        let mut wrote = false;
+        for (index, pixel) in bytes.chunks(self.pixel_len).enumerate() {
+            if readable.is_some_and(|readable| !readable[index]) {
+                continue;
+            }
+            let pixel_addr = addr.wrapping_add((index * self.pixel_len) as u32);
+            wrote |= self.memory.write_bytes(pixel_addr, pixel).is_some();
+        }
+        wrote
+    }
+}
+
+impl RasterMemory for PpcPixelFallback<'_> {
+    fn write_row(&mut self, addr: u32, bytes: &[u8]) -> Option<()> {
+        if self.memory.write_bytes(addr, bytes).is_some() {
+            return Some(());
+        }
+        self.write_pixels(addr, bytes, None).then_some(())
+    }
+
+    fn modify_row(&mut self, addr: u32, buf: &mut [u8], f: impl FnOnce(&mut [u8])) -> Option<()> {
+        if self.memory.read_bytes_into(addr, buf).is_some() {
+            f(buf);
+            return self.write_row(addr, buf);
+        }
+        let pixel_len = self.pixel_len;
+        let readable: Vec<bool> = buf
+            .chunks_mut(pixel_len)
+            .enumerate()
+            .map(|(index, pixel)| {
+                let pixel_addr = addr.wrapping_add((index * pixel_len) as u32);
+                self.memory.read_bytes_into(pixel_addr, pixel).is_some()
+            })
+            .collect();
+        f(buf);
+        self.write_pixels(addr, buf, Some(&readable)).then_some(())
+    }
+}
+
 /// Draws a clipped monochrome-pattern rectangle on `surface` via the native
 /// GPU path or the shared `quickdraw::raster` core (`8`/`16`-bpp copy/RMW and
 /// `1`-bpp solid fills). Returns `None` when the depth/pattern combination or
@@ -76,6 +139,7 @@ pub(super) fn ppc_draw_mono_rect(
     area: Rect,
     respect_clip: bool,
     ink: &Ink,
+    writes: PpcRunWrites,
 ) -> Option<bool> {
     let depth = Depth::from_bits(surface.front_buffer.depth)?;
     let clip = ppc_port_clip_rows_with_clip(memory, port, area.top, area.bottom, respect_clip)?;
@@ -83,9 +147,31 @@ pub(super) fn ppc_draw_mono_rect(
         return Some(wrote);
     }
     let raster_surface = ppc_raster_surface(surface, depth);
+    match if depth == Depth::D1 {
+        PpcRunWrites::PerPixelOnFailure
+    } else {
+        writes
+    } {
+        PpcRunWrites::Whole => ppc_core_mono_rect(memory, &raster_surface, &clip, area, ink),
+        PpcRunWrites::PerPixelOnFailure => {
+            let pixel_len = if depth == Depth::D16 { 2 } else { 1 };
+            let mut memory = PpcPixelFallback { memory, pixel_len };
+            ppc_core_mono_rect(&mut memory, &raster_surface, &clip, area, ink)
+        }
+    }
+}
+
+fn ppc_core_mono_rect<M: RasterMemory>(
+    memory: &mut M,
+    raster_surface: &Surface,
+    clip: &ClipRows,
+    area: Rect,
+    ink: &Ink,
+) -> Option<bool> {
+    let depth = raster_surface.depth;
     if supports(depth, ink.mode, PatternKind::Mono) {
         let mut scratch = Vec::new();
-        return match paint_rect(memory, &raster_surface, &clip, ink, area, &mut scratch) {
+        return match paint_rect(memory, raster_surface, clip, ink, area, &mut scratch) {
             DrawOutcome::Drawn { wrote, .. } => Some(wrote),
             DrawOutcome::Declined => None,
         };
@@ -98,8 +184,7 @@ pub(super) fn ppc_draw_mono_rect(
         let bit = if solid_is_fg { ink.fg } else { ink.bg } & 1 != 0;
         let op = if bit { BitRowOp::Set } else { BitRowOp::Clear };
         let mut scratch = Vec::new();
-        return match paint_solid_1bpp_rect(memory, &raster_surface, &clip, area, op, &mut scratch)
-        {
+        return match paint_solid_1bpp_rect(memory, raster_surface, clip, area, op, &mut scratch) {
             DrawOutcome::Drawn { wrote, .. } => Some(wrote),
             DrawOutcome::Declined => None,
         };
@@ -120,8 +205,12 @@ pub(super) fn ppc_invert_1bpp_rect(
     let raster_surface = ppc_raster_surface(surface, Depth::D1);
     let clip = ClipRows::rectangular(ClipRows::UNBOUNDED);
     let mut scratch = Vec::new();
-    match paint_solid_1bpp_rect(
+    let mut memory = PpcPixelFallback {
         memory,
+        pixel_len: 1,
+    };
+    match paint_solid_1bpp_rect(
+        &mut memory,
         &raster_surface,
         &clip,
         area,
@@ -185,7 +274,10 @@ fn ppc_fill_rect_with_core(
         mode: TransferMode::PatCopy,
         pat_origin: (0, 0),
     };
-    let Some(wrote) = ppc_draw_mono_rect(memory, surface, current_gworld, area, true, &ink) else {
+    // Whole-byte fills have stored whole runs since they moved to the core.
+    let writes = PpcRunWrites::Whole;
+    let Some(wrote) = ppc_draw_mono_rect(memory, surface, current_gworld, area, true, &ink, writes)
+    else {
         return Some(DrawOutcome::Declined);
     };
     Some(DrawOutcome::Drawn {

@@ -1538,7 +1538,8 @@ pub(crate) fn ppc_erase_rect(
             mode: crate::quickdraw::raster::paint::TransferMode::PatCopy,
             pat_origin: (0, 0),
         };
-        if let Some(wrote) = ppc_draw_mono_rect(memory, surface, port, area, true, &ink) {
+        let writes = PpcRunWrites::PerPixelOnFailure;
+        if let Some(wrote) = ppc_draw_mono_rect(memory, surface, port, area, true, &ink, writes) {
             return wrote;
         }
     }
@@ -3603,7 +3604,10 @@ pub(crate) fn ppc_paint_rect(
             mode: crate::quickdraw::raster::paint::TransferMode::PatCopy,
             pat_origin: (surface.left, surface.top),
         };
-        if let Some(wrote) = ppc_draw_mono_rect(memory, surface, current_gworld, area, true, &ink) {
+        let writes = PpcRunWrites::PerPixelOnFailure;
+        if let Some(wrote) =
+            ppc_draw_mono_rect(memory, surface, current_gworld, area, true, &ink, writes)
+        {
             return wrote;
         }
     }
@@ -3722,9 +3726,15 @@ fn ppc_paint_rect_bounds_with_clip(
             mode: crate::quickdraw::raster::paint::TransferMode::PatCopy,
             pat_origin: (0, 0),
         };
-        if let Some(wrote) =
-            ppc_draw_mono_rect(memory, surface, current_gworld, area, respect_clip, &ink)
-        {
+        if let Some(wrote) = ppc_draw_mono_rect(
+            memory,
+            surface,
+            current_gworld,
+            area,
+            respect_clip,
+            &ink,
+            PpcRunWrites::Whole,
+        ) {
             return wrote;
         }
     }
