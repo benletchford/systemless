@@ -461,6 +461,19 @@ impl super::TrapDispatcher {
         let tick = self.current_tick();
         self.input_state
             .advance_key_repeat(tick.wrapping_add(u32::from(rate_ticks)));
+        // The Event Manager reports an auto-key event only when no higher
+        // priority event is available and the key is still held, so repeats
+        // never accumulate while an application is busy. Inside Macintosh
+        // Volume I (1985), pp. I-245--I-246. An undelivered repeat already
+        // stands for this one; queueing more would hold that key's later
+        // keyUp behind every repeat that fell due between two polls.
+        if self
+            .event_queue
+            .iter()
+            .any(|event| event.what == Self::AUTO_KEY_EVENT)
+        {
+            return;
+        }
 
         let message = repeat.message();
         let modifiers = self.current_event_modifiers();
