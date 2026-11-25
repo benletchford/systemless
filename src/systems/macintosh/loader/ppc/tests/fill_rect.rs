@@ -3773,3 +3773,283 @@ fn open_rgn_still_records_shapes_while_the_pen_is_hidden() {
     let storage = ppc_region_storage(&mut loaded.memory, destination).unwrap();
     assert_eq!(storage, region_storage_bytes((-1, 2, 6, 11), &[]));
 }
+
+#[test]
+fn ppc_shared_raster_rect_routes_preserve_bg_clip_erase_paint_invert_and_hidden_pen() {
+    let seed = initial_pixels();
+    let fixture = fixture(&seed, WHOLE_PORT, CLIP_WITH_HOLE);
+    let ((ct, cl, cb, cr), _) = CLIP_WITH_HOLE;
+    let in_clip = |x: i16, y: i16| {
+        let in_hole = (1..4).contains(&y) && (3..8).contains(&x);
+        y >= ct && y < cb && x >= cl && x < cr && !in_hole
+    };
+
+    // 1. Window Manager background fill ignores clipRgn (uses visRgn only).
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PaintRect")).unwrap();
+    install_port(&mut loaded, &fixture, 8);
+    assert!(ppc_paint_window_background_bounds(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PORT,
+        (0, 0, 5, 10),
+        PPC_RGB_BLACK,
+    ));
+    let after = read_pixels(&mut loaded, seed.len());
+    // Hole pixel (5, 2) is outside clipRgn but inside visRgn, so it must be painted.
+    let hole_off = (2 - BOUNDS.0) as usize * usize::from(ROW_BYTES) + (5 - BOUNDS.1) as usize;
+    assert_ne!(after[hole_off], seed[hole_off]);
+
+    // 2. Monochrome EraseRect at 8-bpp matches port-aligned FillRect and returns false when empty.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"EraseRect")).unwrap();
+    install_port(&mut loaded, &fixture, 8);
+    assert!(ppc_erase_rect(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PORT,
+        (-3, -5, 9, 19),
+        0,
+        MIXED,
+        (PPC_RGB_BLACK, Some(fixture.fg_index)),
+        (PPC_RGB_WHITE, Some(fixture.bg_index)),
+    ));
+    let erased = read_pixels(&mut loaded, seed.len());
+    assert_eq!(erased, fill_rect_ppc(&fixture, 8, (-3, -5, 9, 19), MIXED));
+    assert!(!ppc_erase_rect(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PORT,
+        (50, 50, 60, 60),
+        0,
+        MIXED,
+        (PPC_RGB_BLACK, Some(fixture.fg_index)),
+        (PPC_RGB_WHITE, Some(fixture.bg_index)),
+    ));
+
+    // 3. Patterned PaintRect at 8-bpp aligns its pattern to surface origin (left, top).
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PaintRect")).unwrap();
+    install_port(&mut loaded, &fixture, 8);
+    ppc_write_rect(&mut loaded.memory, RECT, -3, -5, 9, 19).unwrap();
+    loaded.cpu.gpr[3] = RECT;
+    assert!(ppc_paint_rect(
+        &loaded.cpu,
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PORT,
+        PPC_RGB_BLACK,
+        Some(fixture.fg_index),
+        PPC_RGB_WHITE,
+        &MIXED,
+    ));
+    let painted = read_pixels(&mut loaded, seed.len());
+    for y in BOUNDS.0..BOUNDS.2 {
+        for x in BOUNDS.1..BOUNDS.3 {
+            let off = (y - BOUNDS.0) as usize * usize::from(ROW_BYTES) + (x - BOUNDS.1) as usize;
+            if in_clip(x, y) {
+                let ly = (y - BOUNDS.0) as usize;
+                let lx = (x - BOUNDS.1) as usize;
+                let set = MIXED[ly & 7] & (0x80 >> (lx & 7)) != 0;
+                assert_eq!(painted[off], if set { fixture.fg_index } else { 0 });
+            } else {
+                assert_eq!(painted[off], seed[off]);
+            }
+        }
+    }
+
+    // 4. 1-bpp InvertRect complements unaligned bit spans without clip regions.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"InvertRect")).unwrap();
+    install_port(&mut loaded, &fixture, 1);
+    let before_1 = read_pixels(&mut loaded, seed.len());
+    assert!(ppc_invert_rect_bounds(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PORT,
+        (-1, -2, 6, 14),
+    ));
+    let after_1 = read_pixels(&mut loaded, seed.len());
+    for y in BOUNDS.0..BOUNDS.2 {
+        for x in BOUNDS.1..BOUNDS.3 {
+            let lx = (x - BOUNDS.1) as usize;
+            let off = (y - BOUNDS.0) as usize * usize::from(ROW_BYTES) + lx / 8;
+            let mask = 0x80u8 >> (lx % 8);
+            let inside = (-1..6).contains(&y) && (-2..14).contains(&x);
+            let expected = if inside {
+                before_1[off] ^ mask
+            } else {
+                before_1[off]
+            };
+            assert_eq!(after_1[off] & mask, expected & mask, "({x}, {y})");
+        }
+    }
+
+    // 5. A solid 1-bpp FillRect still draws nothing while the pen is hidden.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FillRect")).unwrap();
+    install_port(&mut loaded, &fixture, 1);
+    let before_hidden = read_pixels(&mut loaded, seed.len());
+    loaded
+        .memory
+        .write_u16_be(PORT + PPC_CGRAF_PORT_PN_VIS_OFFSET, (-1i16) as u16)
+        .unwrap();
+    ppc_write_rect(&mut loaded.memory, RECT, -3, -5, 9, 19).unwrap();
+    loaded.memory.write_bytes(PATTERN, &[0xFF; 8]).unwrap();
+    loaded.cpu.gpr[3] = RECT;
+    loaded.cpu.gpr[4] = PATTERN;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FillRect);
+    assert_eq!(read_pixels(&mut loaded, seed.len()), before_hidden);
+}
+
+#[test]
+fn ppc_paint_and_erase_rect_preserve_writable_pixels_around_readonly_overlay() {
+    let seed = vec![0x33; usize::from(ROW_BYTES) * HEIGHT];
+    let fixture = fixture(&seed, WHOLE_PORT, WHOLE_PORT);
+    let pattern = [0xff, 0, 0, 0, 0, 0, 0, 0];
+    let run = |import: &[u8], with_overlay: bool| {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(import)).unwrap();
+        install_port(&mut loaded, &fixture, 8);
+        let mut backing = crate::memory::MacMemoryBus::new(0x1000);
+        if with_overlay {
+            let overlay = backing.shared_ram_region(0, 2).unwrap();
+            // SAFETY: this test serializes all access to the backing and the mapped view.
+            unsafe {
+                loaded
+                    .memory
+                    .add_shared_readonly_region(None, PIXELS + 3, overlay);
+            }
+        }
+        let wrote = if import == b"PaintRect" {
+            ppc_write_rect(&mut loaded.memory, RECT, -3, -5, -2, 3).unwrap();
+            loaded.cpu.gpr[3] = RECT;
+            ppc_paint_rect(
+                &loaded.cpu,
+                &mut loaded.memory,
+                &loaded.gworlds,
+                PORT,
+                PPC_RGB_BLACK,
+                Some(fixture.fg_index),
+                PPC_RGB_WHITE,
+                &pattern,
+            )
+        } else {
+            ppc_erase_rect(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                PORT,
+                (-3, -5, -2, 3),
+                0,
+                pattern,
+                (PPC_RGB_BLACK, Some(fixture.fg_index)),
+                (PPC_RGB_WHITE, Some(fixture.bg_index)),
+            )
+        };
+        let row: Vec<_> = (0..8)
+            .map(|i| loaded.memory.read_u8(PIXELS + i).unwrap())
+            .collect();
+        (wrote, row)
+    };
+    for import in [&b"PaintRect"[..], &b"EraseRect"[..]] {
+        let (wrote, mut expected) = run(import, false);
+        assert!(wrote);
+        assert!(expected.iter().all(|&pixel| pixel != 0x33));
+        // The two overlay bytes read back as the zeroed backing.
+        expected[3..5].fill(0);
+        let name = String::from_utf8_lossy(import);
+        assert_eq!(run(import, true), (true, expected), "{name}");
+    }
+}
+
+#[test]
+fn ppc_pixel_fallback_stores_and_modifies_only_whole_accessible_pixels() {
+    use crate::quickdraw::raster::memory::RasterMemory;
+    const BASE: u32 = 0x7000_0000;
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PaintRect")).unwrap();
+
+    // A two-byte read-only overlay straddling the second and third 16-bit pixels.
+    loaded.memory.add_region(BASE, vec![0x33; 8]);
+    let mut backing = crate::memory::MacMemoryBus::new(0x1000);
+    let overlay = backing.shared_ram_region(0, 2).unwrap();
+    // SAFETY: this test serializes all access to the backing and the mapped view.
+    unsafe {
+        loaded
+            .memory
+            .add_shared_readonly_region(None, BASE + 3, overlay);
+    }
+    let mut memory = PpcPixelFallback {
+        memory: &mut loaded.memory,
+        pixel_len: 2,
+    };
+    assert_eq!(memory.write_row(BASE, &[1, 2, 3, 4, 5, 6, 7, 8]), Some(()));
+    let mut actual = [0; 8];
+    loaded.memory.read_bytes_into(BASE, &mut actual).unwrap();
+    assert_eq!(actual, [1, 2, 0x33, 0, 0, 0x33, 7, 8]);
+
+    // An unmapped middle pixel is skipped; the readable ones are modified.
+    const GAP: u32 = 0x7100_0000;
+    loaded.memory.add_region(GAP, vec![0x10, 0x11]);
+    loaded.memory.add_region(GAP + 4, vec![0x14, 0x15]);
+    let mut memory = PpcPixelFallback {
+        memory: &mut loaded.memory,
+        pixel_len: 2,
+    };
+    let mut scratch = [0; 6];
+    let result = memory.modify_row(GAP, &mut scratch, |row| {
+        row.iter_mut().for_each(|byte| *byte = !*byte)
+    });
+    assert_eq!(result, Some(()));
+    let (mut head, mut tail) = ([0; 2], [0; 2]);
+    loaded.memory.read_bytes_into(GAP, &mut head).unwrap();
+    loaded.memory.read_bytes_into(GAP + 4, &mut tail).unwrap();
+    assert_eq!((head, tail), ([0xef, 0xee], [0xeb, 0xea]));
+}
+
+#[test]
+fn ppc_1bpp_rect_routes_store_writable_bytes_around_readonly_overlay() {
+    // One 64-pixel row, so the whole bytes between the edges span the overlay.
+    const ROW: (i16, i16, i16, i16) = (0, 0, 1, 64);
+    let seed = vec![0x5a; 8];
+    let fixture = IndexedPortFixture {
+        bounds: ROW,
+        row_bytes: 8,
+        pixels: &seed,
+        fg_index: 1,
+        bg_index: 0,
+        vis: (ROW, &[]),
+        clip: (ROW, &[]),
+    };
+    let run = |import: &[u8], with_overlay: bool| {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(import)).unwrap();
+        install_port(&mut loaded, &fixture, 1);
+        let mut backing = crate::memory::MacMemoryBus::new(0x1000);
+        if with_overlay {
+            let overlay = backing.shared_ram_region(0, 2).unwrap();
+            // SAFETY: this test serializes all access to the backing and the mapped view.
+            unsafe {
+                loaded
+                    .memory
+                    .add_shared_readonly_region(None, PIXELS + 3, overlay);
+            }
+        }
+        let wrote = if import == b"InvertRect" {
+            ppc_invert_rect_bounds(&mut loaded.memory, &loaded.gworlds, PORT, ROW)
+        } else {
+            ppc_paint_window_background_bounds(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                PORT,
+                ROW,
+                PPC_RGB_BLACK,
+            )
+        };
+        let row: Vec<_> = (0..8)
+            .map(|i| loaded.memory.read_u8(PIXELS + i).unwrap())
+            .collect();
+        (wrote, row)
+    };
+    for import in [&b"InvertRect"[..], &b"PaintRect"[..]] {
+        let (wrote, mut expected) = run(import, false);
+        assert!(wrote);
+        assert!(expected.iter().all(|&byte| byte != 0x5a));
+        // The two overlay bytes read back as the zeroed backing.
+        expected[3..5].fill(0);
+        let name = String::from_utf8_lossy(import);
+        assert_eq!(run(import, true), (true, expected), "{name}");
+    }
+}

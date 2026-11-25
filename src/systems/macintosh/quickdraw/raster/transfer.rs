@@ -33,7 +33,7 @@ pub(crate) fn apply_bit_row_op<M: RasterMemory>(
     end_bit: u32,
     op: BitRowOp,
     middle_scratch: &mut [u8],
-) -> Option<()> {
+) -> bool {
     debug_assert!(first_bit < end_bit);
     let first_byte = first_bit / 8;
     let last_byte = (end_bit - 1) / 8;
@@ -46,28 +46,35 @@ pub(crate) fn apply_bit_row_op<M: RasterMemory>(
     };
     if first_byte == last_byte {
         let addr = row_base.wrapping_add(first_byte);
-        return memory.modify_byte(addr, |byte| apply(byte, head_mask & tail_mask));
+        return memory
+            .modify_byte(addr, |byte| apply(byte, head_mask & tail_mask))
+            .is_some();
     }
     let head_addr = row_base.wrapping_add(first_byte);
-    memory.modify_byte(head_addr, |byte| apply(byte, head_mask))?;
+    let mut wrote = memory
+        .modify_byte(head_addr, |byte| apply(byte, head_mask))
+        .is_some();
     let middle = (last_byte - first_byte - 1) as usize;
     if middle > 0 {
         let middle_addr = head_addr.wrapping_add(1);
-        match op {
+        wrote |= match op {
             BitRowOp::Set | BitRowOp::Clear => {
-                memory.write_row(middle_addr, &middle_scratch[..middle])?;
+                memory.write_row(middle_addr, &middle_scratch[..middle]).is_some()
             }
-            BitRowOp::Toggle => {
-                memory.modify_row(middle_addr, &mut middle_scratch[..middle], |row| {
+            BitRowOp::Toggle => memory
+                .modify_row(middle_addr, &mut middle_scratch[..middle], |row| {
                     for byte in row.iter_mut() {
                         *byte = !*byte;
                     }
-                })?;
-            }
-        }
+                })
+                .is_some(),
+        };
     }
     let tail_addr = row_base.wrapping_add(last_byte);
-    memory.modify_byte(tail_addr, |byte| apply(byte, tail_mask))
+    wrote
+        | memory
+            .modify_byte(tail_addr, |byte| apply(byte, tail_mask))
+            .is_some()
 }
 
 /// Applies one of the six read-modify-write 8-bpp boolean transfer modes

@@ -256,8 +256,13 @@ pub(crate) struct Ink {
 }
 
 pub(crate) enum DrawOutcome {
-    /// Drawn; `touched` bounds every pixel written (it may be empty).
-    Drawn { touched: Rect },
+    /// Drawn; `touched` bounds every pixel written (it may be empty) and
+    /// `wrote` is true when at least one row write succeeded.
+    Drawn {
+        #[allow(dead_code)]
+        touched: Rect,
+        wrote: bool,
+    },
     /// Nothing was written; the caller draws with its own path.
     Declined,
 }
@@ -304,6 +309,7 @@ pub(crate) fn paint_rect<M: RasterMemory>(
     else {
         return DrawOutcome::Drawn {
             touched: EMPTY_RECT,
+            wrote: false,
         };
     };
     let left = i32::from(area.left);
@@ -317,13 +323,16 @@ pub(crate) fn paint_rect<M: RasterMemory>(
             .wrapping_add(((y - image_top) as u32).wrapping_mul(surface.row_bytes))
             .wrapping_add(((x - image_left) as u32).wrapping_mul(pixel_len as u32))
     };
+    let mut wrote = false;
     if ink.mode.is_copy() {
         let mut rows = PatCopyRows::new(scratch, ink, left, width, pixel_len);
         clip.for_each_run(area, |y, run_left, run_right| {
             let prepared = rows.row((y - origin_v).rem_euclid(8) as usize);
             let start = (run_left - left) as usize * pixel_len;
             let end = (run_right - left) as usize * pixel_len;
-            let _ = memory.write_row(pixel_address(y, run_left), &prepared[start..end]);
+            wrote |= memory
+                .write_row(pixel_address(y, run_left), &prepared[start..end])
+                .is_some();
         });
     } else {
         debug_assert_eq!(surface.depth, Depth::D8);
@@ -337,12 +346,17 @@ pub(crate) fn paint_rect<M: RasterMemory>(
             let bits = ink.pattern[pat_row].rotate_left(rotate);
             let run_len = (run_right - run_left) as usize;
             let addr = pixel_address(y, run_left);
-            let _ = memory.modify_pixel_row(addr, &mut scratch[..run_len], |row| {
-                apply_boolean_row_8(row, bits, ink.mode, fg, bg);
-            });
+            wrote |= memory
+                .modify_pixel_row(addr, &mut scratch[..run_len], |row| {
+                    apply_boolean_row_8(row, bits, ink.mode, fg, bg);
+                })
+                .is_some();
         });
     }
-    DrawOutcome::Drawn { touched: area }
+    DrawOutcome::Drawn {
+        touched: area,
+        wrote,
+    }
 }
 
 /// Applies a uniform 1-bpp whole-row operation (`Set`, `Clear`, or `Toggle`)
@@ -365,6 +379,7 @@ pub(crate) fn paint_solid_1bpp_rect<M: RasterMemory>(
     else {
         return DrawOutcome::Drawn {
             touched: EMPTY_RECT,
+            wrote: false,
         };
     };
     let image_top = i32::from(surface.bounds.top);
@@ -375,12 +390,14 @@ pub(crate) fn paint_solid_1bpp_rect<M: RasterMemory>(
     if first_bit >= end_bit {
         return DrawOutcome::Drawn {
             touched: EMPTY_RECT,
+            wrote: false,
         };
     }
     let max_middle = ((end_bit - 1) / 8).saturating_sub(first_bit / 8 + 1) as usize;
     let fill = if op == BitRowOp::Set { 0xFF } else { 0x00 };
     scratch.clear();
     scratch.resize(max_middle, fill);
+    let mut wrote = false;
     clip.for_each_run(area, |y, run_left, run_right| {
         let run_first = (run_left - image_left) as u32;
         let run_end = ((run_right - image_left) as u32).min(max_bits);
@@ -388,8 +405,11 @@ pub(crate) fn paint_solid_1bpp_rect<M: RasterMemory>(
             let row_base = surface
                 .base
                 .wrapping_add(((y - image_top) as u32).wrapping_mul(surface.row_bytes));
-            let _ = apply_bit_row_op(memory, row_base, run_first, run_end, op, scratch);
+            wrote |= apply_bit_row_op(memory, row_base, run_first, run_end, op, scratch);
         }
     });
-    DrawOutcome::Drawn { touched: area }
+    DrawOutcome::Drawn {
+        touched: area,
+        wrote,
+    }
 }
