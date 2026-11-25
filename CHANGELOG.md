@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.128.1](https://github.com/benletchford/systemless/compare/v0.128.0...v0.128.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **desktop:** follow menu bar height while the window keeps its automatic size ([#6744](https://github.com/benletchford/systemless/issues/6744)) ([dc380db](https://github.com/benletchford/systemless/commit/dc380db3ed3a0587f1099af2356eaee234dc6f21))
+* **events:** keep at most one auto-key repeat waiting in the event queue ([#6741](https://github.com/benletchford/systemless/issues/6741)) ([da05530](https://github.com/benletchford/systemless/commit/da055302a22c76ccfe3bb021b56c2675b71e27a7))
+* **ppc:** draw nothing from shape imports while the pen is hidden ([#6737](https://github.com/benletchford/systemless/issues/6737)) ([7fae1a7](https://github.com/benletchford/systemless/commit/7fae1a79175ceea1291bac210bcb9266701ef167))
+* **presentation:** keep outline text under partial-pattern patBic paints ([#6706](https://github.com/benletchford/systemless/issues/6706)) ([f230f53](https://github.com/benletchford/systemless/commit/f230f53d49e92cf889f1a583c8b39cd0ff7850e8))
+* **present:** keep text detail on rows a partial overdraw leaves untouched ([#6743](https://github.com/benletchford/systemless/issues/6743)) ([1ea0b0f](https://github.com/benletchford/systemless/commit/1ea0b0ffd5e2051e25085256e38da1517e6715be))
+* **sound:** run buffer completion callbacks at the exhaustion boundary ([#6739](https://github.com/benletchford/systemless/issues/6739)) ([3548098](https://github.com/benletchford/systemless/commit/3548098128280bb43764e066c65be19d1564b299))
+
+
+### Performance Improvements
+
+* **ppc:** skip unchanged GWorld mirror scans and unused graphics handle snapshots ([#6729](https://github.com/benletchford/systemless/issues/6729)) ([e5154dc](https://github.com/benletchford/systemless/commit/e5154dc9b6dc1a959a6023cf2155b70f30dfbddd))
+* **present:** reuse unchanged compact detail, palette rows, and packed captures ([#6721](https://github.com/benletchford/systemless/issues/6721)) ([68b5eaa](https://github.com/benletchford/systemless/commit/68b5eaa642f809d489b1fd34f3e98a58ac6503ce))
+* **present:** specialize compact Metal sampling and direct-color export ([614379f](https://github.com/benletchford/systemless/commit/614379f311a6ed253731f592f8db7c38cbea8a47))
+* **quickdraw:** execute region-clipped CopyBits spans through RowCopy ([#6728](https://github.com/benletchford/systemless/issues/6728)) ([89c0595](https://github.com/benletchford/systemless/commit/89c059544e81ca779534de50bd81e3ca85de2e5b))
+* **quickdraw:** share unscaled CopyMask row transfers across 68K and PowerPC ([#6727](https://github.com/benletchford/systemless/issues/6727)) ([102a4de](https://github.com/benletchford/systemless/commit/102a4de18fb9c00c92eb50f3f6b64ee194db4a4b))
+* **quickdraw:** skip a 68K frame's interior in the per-pixel shape scan ([#6735](https://github.com/benletchford/systemless/issues/6735)) ([b1bc577](https://github.com/benletchford/systemless/commit/b1bc577e4d0637652595a2031dbb1b65e939ee5e))
+
+
+### Code Refactoring
+
+* **quickdraw:** route 68K 8-bpp patterned and 1-bpp solid rect fills through shared raster core ([#6732](https://github.com/benletchford/systemless/issues/6732)) ([abfe8d2](https://github.com/benletchford/systemless/commit/abfe8d26b645f566d6af31a1fdfec4414970b579))
+* **quickdraw:** route 68k solid rectangle fills through the shared raster core ([f30936b](https://github.com/benletchford/systemless/commit/f30936b65ac72a3f877a26768ad9bf89b0dc897d))
+* **quickdraw:** route PowerPC rectangle fills and 1-bpp inverts through shared raster core ([#6733](https://github.com/benletchford/systemless/issues/6733)) ([4c5df57](https://github.com/benletchford/systemless/commit/4c5df5702c1e2b63dcfd8195f8db1d1454115010))
+
 ## [0.128.0](https://github.com/benletchford/systemless/compare/v0.127.5...v0.128.0) (2026-11-24)
 
 
