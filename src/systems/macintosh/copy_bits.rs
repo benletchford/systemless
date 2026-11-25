@@ -1662,12 +1662,12 @@ impl RowCopy<'_> {
     /// Snapshot all region-clipped horizontal spans before writing so aliased
     /// source/destination buffers observe pre-write pixels across every band.
     /// `clip_rows[i]` lists sorted `[left, right)` endpoint pairs for scanline
-    /// `band_top + i`.
+    /// `band_top + i`. For rectangular clips the adapter has already narrowed
+    /// `self.clip` to the region bounds and can omit the band.
     pub(crate) fn execute_clipped_rows(
         self,
         memory: &mut impl CopyBitsMemory,
-        band_top: i32,
-        clip_rows: &[Vec<i16>],
+        band: Option<(i32, &[Vec<i16>])>,
     ) -> RowCopyOutcome {
         let depth = self.source.depth;
         let byte_aligned =
@@ -1733,16 +1733,19 @@ impl RowCopy<'_> {
         let mut total_bytes = 0usize;
 
         for (row_offset, y) in (top..bottom).enumerate() {
-            let Some(intervals) = y
-                .checked_sub(band_top)
-                .and_then(|offset| usize::try_from(offset).ok())
-                .and_then(|index| clip_rows.get(index))
-            else {
-                return RowCopyOutcome::Declined;
+            let intervals: &[i16] = if let Some((band_top, clip_rows)) = band {
+                let Some(intervals) = y
+                    .checked_sub(band_top)
+                    .and_then(|offset| usize::try_from(offset).ok())
+                    .and_then(|index| clip_rows.get(index))
+                else {
+                    return RowCopyOutcome::Declined;
+                };
+                intervals
+            } else {
+                &[i16::MIN, i16::MAX]
             };
-            if intervals.len() % 2 != 0
-                || intervals.windows(2).any(|pair| pair[0] > pair[1])
-            {
+            if intervals.len() % 2 != 0 || intervals.windows(2).any(|pair| pair[0] > pair[1]) {
                 return RowCopyOutcome::Declined;
             }
             let Some(source_y) = y.checked_add(y_delta) else {
@@ -1795,7 +1798,9 @@ impl RowCopy<'_> {
                 .read_copy_row(source, &mut pixels[offset..offset + len])
                 .is_none()
             {
-                return RowCopyOutcome::ReadOrGeometryFailure;
+                // The scalar masked path skips individual unreadable pixels.
+                // All spans are still snapshots and no write has started.
+                return RowCopyOutcome::Declined;
             }
             offset += len;
         }
@@ -4429,7 +4434,7 @@ mod tests {
                             clip: dst_rect,
                             palette: use_palette.then_some(&palette),
                         }
-                        .execute_clipped_rows(&mut ppc, band_top, &shifted_rows),
+                        .execute_clipped_rows(&mut ppc, Some((band_top, &shifted_rows))),
                         RowCopyOutcome::Completed
                     );
                     let mut actual_ppc = vec![0u8; buf_len];
@@ -4453,7 +4458,7 @@ mod tests {
                             clip: dst_rect,
                             palette: use_palette.then_some(&palette),
                         }
-                        .execute_clipped_rows(&mut bus, band_top, &shifted_rows),
+                        .execute_clipped_rows(&mut bus, Some((band_top, &shifted_rows))),
                         RowCopyOutcome::Completed
                     );
                     let mut actual_bus = vec![0u8; buf_len];
@@ -4475,7 +4480,7 @@ mod tests {
                 clip: [0, 2, 2, 6],
                 palette: None,
             }
-            .execute_clipped_rows(&mut ppc, 0, &[vec![0, 2, 6, 8], vec![]]),
+            .execute_clipped_rows(&mut ppc, Some((0, &[vec![0, 2, 6, 8], vec![]]))),
             RowCopyOutcome::NoOp
         );
     }

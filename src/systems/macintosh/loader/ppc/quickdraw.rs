@@ -5975,9 +5975,10 @@ pub(crate) fn ppc_copy_bits(
                 }
                 Some(storage) if memory.quickdraw_gpu_renderer().is_none() => {
                     if storage.len() == 10 {
-                        row_copy.execute(memory)
+                        row_copy.execute_clipped_rows(memory, None)
                     } else if let Some((band_top, band_rows)) = mask_rows.band_rows() {
-                        row_copy.execute_clipped_rows(memory, i32::from(band_top), band_rows)
+                        row_copy
+                            .execute_clipped_rows(memory, Some((i32::from(band_top), band_rows)))
                     } else {
                         RowCopyOutcome::Declined
                     }
