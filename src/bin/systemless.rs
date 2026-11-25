@@ -615,6 +615,61 @@ fn guest_resize_scale(
     display_scale.filter(|_| !fullscreen && !maximized)
 }
 
+/// Native-menu presentation owns the launch size until the host reports a
+/// resize other than one requested by the application.
+#[cfg(any(target_os = "macos", test))]
+struct AutomaticMenuWindow {
+    requested: winit::dpi::PhysicalSize<u32>,
+    previous_request: Option<winit::dpi::PhysicalSize<u32>>,
+    screen: (u32, u32),
+    crop: ContentRect,
+    menu_height: u32,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl AutomaticMenuWindow {
+    fn accepts_resize(&mut self, size: winit::dpi::PhysicalSize<u32>) -> bool {
+        if size == self.requested {
+            self.previous_request = None;
+            true
+        } else if self.previous_request == Some(size) {
+            self.previous_request = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn observe_resize(
+        owner: &mut Option<Self>,
+        size: winit::dpi::PhysicalSize<u32>,
+        protected: bool,
+    ) {
+        if owner.as_mut().is_some_and(|sizing| protected || !sizing.accepts_resize(size)) {
+            *owner = None;
+        }
+    }
+
+    fn request_visible_size(
+        &mut self,
+        content: ContentRect,
+        monitor: Option<winit::dpi::PhysicalSize<u32>>,
+        dpi: f64,
+    ) -> winit::dpi::PhysicalSize<u32> {
+        self.previous_request = Some(self.requested);
+        self.requested = automatic_window_size(content.width, content.height, monitor, dpi);
+        self.requested
+    }
+
+    fn menu_changed(&mut self, screen: (u32, u32), crop: ContentRect, height: u32) -> bool {
+        let changed = self.screen == screen && self.crop == crop && self.menu_height != height;
+        self.screen = screen;
+        self.crop = crop;
+        self.menu_height = height;
+        changed
+    }
+}
+
 fn presentation_resize_check_needed(
     sized_content: Option<ContentRect>,
     desired_content: ContentRect,
@@ -1085,6 +1140,8 @@ struct App {
     /// gameplay crop.
     #[cfg(target_os = "macos")]
     window_sized_content_rect: Option<ContentRect>,
+    #[cfg(target_os = "macos")]
+    automatic_menu_window: Option<AutomaticMenuWindow>,
     /// `--fit-game-window`: crop to the main document window's structure
     /// region instead of learning or caching a gameplay crop.
     #[cfg(target_os = "macos")]
@@ -1289,6 +1346,8 @@ impl App {
                 .map(|cache| (cache.screen_width, cache.screen_height, cache.pixel_size)),
             #[cfg(target_os = "macos")]
             window_sized_content_rect: cached_content.as_ref().map(|cache| cache.content),
+            #[cfg(target_os = "macos")]
+            automatic_menu_window: None,
             #[cfg(target_os = "macos")]
             fit_game_window: false,
             #[cfg(target_os = "macos")]
@@ -2118,6 +2177,9 @@ impl App {
                 width: game_w,
                 height: game_h,
             });
+            let menu_rows_changed = self.automatic_menu_window.as_mut().is_some_and(|sizing| {
+                sizing.menu_changed((game_w, game_h), stable_content, frame.crop.hidden_menu_height)
+            });
             let stable_content = presentation_content_rect(
                 stable_content,
                 None,
@@ -2148,6 +2210,20 @@ impl App {
                 && self.window.as_ref().is_some_and(|window| {
                     window_guest_resize_scale(window, self.display_scale).is_some()
                 });
+            if menu_rows_changed && desired_content == stable_content && resize_check_needed {
+                if let (Some(window), Some(sizing)) = (&self.window, &mut self.automatic_menu_window) {
+                    if window.fullscreen().is_some() || window.is_maximized() {
+                        self.automatic_menu_window = None;
+                    } else {
+                        let target = sizing.request_visible_size(
+                            stable_content,
+                            window_monitor_bounds(window).map(|(_, size)| size),
+                            window.scale_factor(),
+                        );
+                        let _ = window.request_inner_size(target);
+                    }
+                }
+            }
             if resize_check_needed && !allow_guest_resize {
                 self.pending_window_transition = None;
                 self.transient_window_restore_geometry = None;
@@ -3493,6 +3569,24 @@ impl ApplicationHandler for App {
                     bounds.map(|(_, size)| size),
                     window.scale_factor(),
                 );
+                #[cfg(target_os = "macos")]
+                if self.native_integrations && !self.fit_game_window {
+                    let screen = (initial_screen_width(), initial_screen_height());
+                    let crop = self.content_rect.unwrap_or(ContentRect {
+                        left: 0, top: 0, width: screen.0, height: screen.1,
+                    });
+                    self.automatic_menu_window = Some(AutomaticMenuWindow {
+                        requested: target,
+                        previous_request: Some(initial_window_size),
+                        screen,
+                        crop,
+                        menu_height: self.guest_state.hidden_menu_height,
+                    });
+                    self.window_sized_content_rect = Some(presentation_content_rect(
+                        crop,
+                        None, screen.0, screen.1, self.guest_state.hidden_menu_height,
+                    ));
+                }
                 let _ = window.request_inner_size(target);
                 if let Some((origin, extent)) = bounds {
                     window.set_outer_position(winit::dpi::PhysicalPosition::new(
@@ -3652,6 +3746,12 @@ impl ApplicationHandler for App {
                 {
                     self.force_gpu_present = true;
                     self.window_resize_events = self.window_resize_events.saturating_add(1);
+                    if self.automatic_menu_window.is_some() {
+                        let protected = self.window.as_ref().is_some_and(|window| {
+                            window.fullscreen().is_some() || window.is_maximized()
+                        });
+                        AutomaticMenuWindow::observe_resize(&mut self.automatic_menu_window, size, protected);
+                    }
                 }
                 // Live resizing runs independently of the guest VBL. Present
                 // the latest complete guest image at the new drawable size
@@ -5211,6 +5311,34 @@ mod tests {
         );
         let zero = automatic_window_size(0, 0, None, 1.0);
         assert!(zero.width > 0 && zero.height > 0);
+    }
+
+    #[test]
+    fn automatic_menu_rows_follow_guest_visibility_until_the_user_resizes() {
+        use winit::dpi::PhysicalSize;
+        let crop = ContentRect { left: 0, top: 0, width: 640, height: 480 };
+        let mut sizing = AutomaticMenuWindow {
+            requested: PhysicalSize::new(1280, 920),
+            previous_request: Some(PhysicalSize::new(640, 460)),
+            screen: (640, 480), crop, menu_height: 20,
+        };
+        assert!(sizing.accepts_resize(PhysicalSize::new(640, 460)));
+        assert!(sizing.accepts_resize(PhysicalSize::new(1280, 920)));
+        assert!(sizing.menu_changed((640, 480), crop, 0));
+        let visible = ContentRect { top: 20, height: 460, ..crop };
+        let with_menu = automatic_window_size(visible.width, visible.height, None, 2.0);
+        let without_menu = sizing.request_visible_size(crop, None, 2.0);
+        assert_eq!(without_menu.width, with_menu.width);
+        assert!(without_menu.height > with_menu.height);
+        assert!(!sizing.menu_changed((640, 480), crop, 0));
+        assert!(!sizing.menu_changed((800, 600), crop, 20));
+        assert!(!sizing.menu_changed((800, 600), ContentRect { width: 512, ..crop }, 0));
+        let mut owner = Some(sizing);
+        AutomaticMenuWindow::observe_resize(&mut owner, PhysicalSize::new(900, 700), false);
+        assert!(owner.is_none());
+        // Returning manually to the startup dimensions leaves sizing with the user.
+        AutomaticMenuWindow::observe_resize(&mut owner, PhysicalSize::new(1280, 920), false);
+        assert!(owner.is_none());
     }
 
     #[test]
