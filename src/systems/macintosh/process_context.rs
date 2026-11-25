@@ -2643,15 +2643,39 @@ impl SharedProcessQuickDrawHiliteColors {
 /// state bits that `GetPixelsState` and `SetPixelsState` expose cross the
 /// adapter boundary. Inside Macintosh: Imaging With QuickDraw (1994), pp.
 /// 6-30--6-38.
+#[derive(Clone, Debug, Default)]
+struct ProcessQuickDrawPixelStateStore {
+    states: HashMap<u32, u32>,
+    revision: u64,
+    synced_mirror_revision: u64,
+    synced_mirror_signature: Option<u64>,
+}
+
+impl PartialEq for ProcessQuickDrawPixelStateStore {
+    fn eq(&self, other: &Self) -> bool {
+        self.states == other.states
+    }
+}
+
+impl Eq for ProcessQuickDrawPixelStateStore {}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SharedProcessQuickDrawPixelStates(
-    SharedProcessValue<HashMap<u32, u32>>,
+    SharedProcessValue<ProcessQuickDrawPixelStateStore>,
 );
 
 #[allow(dead_code)]
 impl SharedProcessQuickDrawPixelStates {
     pub(crate) fn from_value(states: HashMap<u32, u32>) -> Self {
-        Self(SharedProcessValue::from_value(states))
+        let revision = u64::from(!states.is_empty());
+        Self(SharedProcessValue::from_value(
+            ProcessQuickDrawPixelStateStore {
+                states,
+                revision,
+                synced_mirror_revision: 0,
+                synced_mirror_signature: None,
+            },
+        ))
     }
 
     pub(crate) fn shared_handle(&self) -> Self {
@@ -2664,15 +2688,33 @@ impl SharedProcessQuickDrawPixelStates {
     }
 
     pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&HashMap<u32, u32>) -> R) -> R {
-        self.0.with_ref(operation)
+        self.0.with_ref(|store| operation(&store.states))
     }
 
     pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut HashMap<u32, u32>) -> R) -> R {
-        self.0.with_mut(operation)
+        self.0.with_mut(|store| {
+            store.revision = store.revision.wrapping_add(1);
+            operation(&mut store.states)
+        })
+    }
+
+    pub(crate) fn mirrors_match(&self, signature: u64) -> bool {
+        self.0.with_ref(|store| {
+            store.synced_mirror_revision == store.revision
+                && store.synced_mirror_signature == Some(signature)
+        })
+    }
+
+    pub(crate) fn record_synced_mirrors(&self, signature: u64) {
+        self.0.with_mut(|store| {
+            store.synced_mirror_revision = store.revision;
+            store.synced_mirror_signature = Some(signature);
+        });
     }
 
     pub(crate) fn attach_to(&mut self, process_state: &Self) {
-        self.0.attach_to(&process_state.0, |states| states.is_empty());
+        self.0
+            .attach_to(&process_state.0, |store| store.states.is_empty());
     }
 
     pub(crate) fn is_pristine(&self) -> bool {
@@ -2687,11 +2729,16 @@ impl SharedProcessQuickDrawPixelStates {
         self.with_ref(|states| states.len())
     }
 
+    /// Read one explicitly registered QuickDraw pixel-state word if present.
+    pub(crate) fn get_quickdraw_pixel_state(&self, pixmap_handle: u32) -> Option<u32> {
+        self.with_ref(|states| states.get(&pixmap_handle).copied())
+    }
+
     /// Read one process-owned QuickDraw pixel-state word without returning a
     /// reference into the attached adapter's `UnsafeCell`.
     /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 6-32--6-38.
     pub(crate) fn quickdraw_pixel_state(&self, pixmap_handle: u32) -> u32 {
-        self.with_ref(|states| states.get(&pixmap_handle).copied().unwrap_or(0))
+        self.get_quickdraw_pixel_state(pixmap_handle).unwrap_or(0)
     }
 
     /// Report whether a PixMapHandle has an explicitly registered state word.
@@ -2704,19 +2751,30 @@ impl SharedProcessQuickDrawPixelStates {
     /// Register or replace one process-owned QuickDraw pixel-state word.
     /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 6-34--6-38.
     pub(crate) fn set_quickdraw_pixel_state(&self, pixmap_handle: u32, state: u32) {
-        self.with_mut(|states| {
-            states.insert(pixmap_handle, state);
+        self.0.with_mut(|store| {
+            if store.states.insert(pixmap_handle, state) != Some(state) {
+                store.revision = store.revision.wrapping_add(1);
+            }
         });
     }
 
     /// Drop a disposed PixMapHandle's registered pixel-state word.
     pub(crate) fn remove_quickdraw_pixel_state(&self, pixmap_handle: u32) -> Option<u32> {
-        self.with_mut(|states| states.remove(&pixmap_handle))
+        self.0.with_mut(|store| {
+            let removed = store.states.remove(&pixmap_handle);
+            if removed.is_some() {
+                store.revision = store.revision.wrapping_add(1);
+            }
+            removed
+        })
     }
 
     pub(crate) fn clear(&self) {
-        self.with_mut(|states| {
-            states.clear();
+        self.0.with_mut(|store| {
+            if !store.states.is_empty() {
+                store.states.clear();
+                store.revision = store.revision.wrapping_add(1);
+            }
         });
     }
 }

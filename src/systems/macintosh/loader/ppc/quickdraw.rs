@@ -4299,13 +4299,43 @@ pub(crate) fn ppc_gworld_pixel_state_from_mirror(record: &PpcGWorldRecord) -> u3
         | (u32::from(record.pixels_locked) * PPC_PIXELS_LOCKED)
 }
 
+fn ppc_gworld_pixel_mirror_signature(gworlds: &[PpcGWorldRecord]) -> u64 {
+    let mut hash = (gworlds.len() as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
+    for record in gworlds {
+        let word = (u64::from(record.pixmap_handle) << 2)
+            | (u64::from(record.pixels_locked) << 1)
+            | u64::from(record.pixels_no_purge);
+        hash = (hash ^ word)
+            .wrapping_mul(0x517c_c1b7_2722_0a95)
+            .rotate_left(5);
+    }
+    hash
+}
+
+#[cfg(test)]
+thread_local! {
+    static PIXEL_STATE_MIRROR_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn pixel_state_mirror_scan_count() -> u64 {
+    PIXEL_STATE_MIRROR_SCANS.with(std::cell::Cell::get)
+}
+
 pub(crate) fn ppc_sync_gworld_pixel_state_mirrors(
     gworlds: &mut [PpcGWorldRecord],
     pixel_states: &SharedProcessQuickDrawPixelStates,
 ) {
-    // Runs before most imports: one registry borrow and one lookup per record.
+    let pre_signature = ppc_gworld_pixel_mirror_signature(gworlds);
+    if pixel_states.mirrors_match(pre_signature) {
+        return;
+    }
+    #[cfg(test)]
+    PIXEL_STATE_MIRROR_SCANS.with(|count| count.set(count.get() + 1));
+    // Runs when pixel-state revision or GWorld mirror state changed: one
+    // registry borrow and one lookup per record.
     pixel_states.with_mut(|states| {
-        for record in gworlds {
+        for record in gworlds.iter_mut() {
             if record.pixmap_handle == 0 {
                 continue;
             }
@@ -4319,6 +4349,8 @@ pub(crate) fn ppc_sync_gworld_pixel_state_mirrors(
             record.pixels_no_purge = state & PPC_PIXELS_PURGEABLE == 0;
         }
     });
+    let post_signature = ppc_gworld_pixel_mirror_signature(gworlds);
+    pixel_states.record_synced_mirrors(post_signature);
 }
 
 /// Return a process-owned state word, adopting a legacy native mirror only
@@ -4332,8 +4364,8 @@ pub(crate) fn ppc_ensure_gworld_pixel_state(
     if pixmap_handle == 0 {
         return None;
     }
-    if pixel_states.has_quickdraw_pixel_state(pixmap_handle) {
-        return Some(pixel_states.quickdraw_pixel_state(pixmap_handle));
+    if let Some(state) = pixel_states.get_quickdraw_pixel_state(pixmap_handle) {
+        return Some(state);
     }
     let state = gworlds
         .iter()
@@ -4348,12 +4380,31 @@ pub(crate) fn ppc_sync_gworld_pixel_state_mirror(
     pixmap_handle: u32,
     state: u32,
 ) {
-    if let Some(record) = gworlds
+    // Ports can share one PixMapHandle (for example, the screen's), so every
+    // matching record must see the transition before the signature is recorded.
+    for record in gworlds
         .iter_mut()
-        .find(|record| record.pixmap_handle == pixmap_handle)
+        .filter(|record| record.pixmap_handle == pixmap_handle)
     {
         record.pixels_locked = state & PPC_PIXELS_LOCKED != 0;
         record.pixels_no_purge = state & PPC_PIXELS_PURGEABLE == 0;
+    }
+}
+
+fn ppc_commit_gworld_pixel_state_transition(
+    gworlds: &mut [PpcGWorldRecord],
+    pixel_states: &SharedProcessQuickDrawPixelStates,
+    pixmap_handle: u32,
+    existing: u32,
+    next: u32,
+) {
+    let was_synced = pixel_states.mirrors_match(ppc_gworld_pixel_mirror_signature(gworlds));
+    if next != existing {
+        pixel_states.set_quickdraw_pixel_state(pixmap_handle, next);
+    }
+    ppc_sync_gworld_pixel_state_mirror(gworlds, pixmap_handle, next);
+    if was_synced {
+        pixel_states.record_synced_mirrors(ppc_gworld_pixel_mirror_signature(gworlds));
     }
 }
 
@@ -4370,8 +4421,7 @@ pub(crate) fn ppc_set_gworld_pixel_state(
     let masked = state & (PPC_KEEP_LOCAL | PPC_PIXELS_PURGEABLE | PPC_PIXELS_LOCKED);
     let preserved = existing & !(PPC_PIXELS_PURGEABLE | PPC_PIXELS_LOCKED);
     let next = preserved | masked;
-    pixel_states.set_quickdraw_pixel_state(pixmap_handle, next);
-    ppc_sync_gworld_pixel_state_mirror(gworlds, pixmap_handle, next);
+    ppc_commit_gworld_pixel_state_transition(gworlds, pixel_states, pixmap_handle, existing, next);
 }
 
 pub(crate) fn ppc_lock_pixels(
@@ -4383,8 +4433,7 @@ pub(crate) fn ppc_lock_pixels(
         return 0;
     };
     let next = state | PPC_PIXELS_LOCKED;
-    pixel_states.set_quickdraw_pixel_state(pixmap_handle, next);
-    ppc_sync_gworld_pixel_state_mirror(gworlds, pixmap_handle, next);
+    ppc_commit_gworld_pixel_state_transition(gworlds, pixel_states, pixmap_handle, state, next);
     1
 }
 
@@ -4397,8 +4446,7 @@ pub(crate) fn ppc_unlock_pixels(
         return;
     };
     let next = state & !PPC_PIXELS_LOCKED;
-    pixel_states.set_quickdraw_pixel_state(pixmap_handle, next);
-    ppc_sync_gworld_pixel_state_mirror(gworlds, pixmap_handle, next);
+    ppc_commit_gworld_pixel_state_transition(gworlds, pixel_states, pixmap_handle, state, next);
 }
 
 pub(crate) fn ppc_allow_purge_pixels(
@@ -4410,8 +4458,7 @@ pub(crate) fn ppc_allow_purge_pixels(
         return;
     };
     let next = state | PPC_PIXELS_PURGEABLE;
-    pixel_states.set_quickdraw_pixel_state(pixmap_handle, next);
-    ppc_sync_gworld_pixel_state_mirror(gworlds, pixmap_handle, next);
+    ppc_commit_gworld_pixel_state_transition(gworlds, pixel_states, pixmap_handle, state, next);
 }
 
 pub(crate) fn ppc_no_purge_pixels(
@@ -4423,8 +4470,7 @@ pub(crate) fn ppc_no_purge_pixels(
         return;
     };
     let next = state & !PPC_PIXELS_PURGEABLE;
-    pixel_states.set_quickdraw_pixel_state(pixmap_handle, next);
-    ppc_sync_gworld_pixel_state_mirror(gworlds, pixmap_handle, next);
+    ppc_commit_gworld_pixel_state_transition(gworlds, pixel_states, pixmap_handle, state, next);
 }
 
 pub(crate) fn ppc_read_pixmap_bits(memory: &mut PpcSectionMem, pixmap: u32) -> Option<PpcPixMapBits> {

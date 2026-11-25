@@ -3080,3 +3080,126 @@ fn mirror_sync_follows_the_registry_and_adopts_unregistered_records_once() {
     ppc_sync_gworld_pixel_state_mirrors(&mut gworlds, &states);
     assert!(gworlds[1].pixels_locked);
 }
+
+#[test]
+fn mirror_sync_skips_redundant_registry_scans_across_lock_unlock_and_detects_process_mutations() {
+    let record = |pixmap_handle, pixels_locked, pixels_no_purge| PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: 0x1000 + pixmap_handle,
+        pixmap_handle,
+        pixmap: 0x2000 + pixmap_handle,
+        base_addr: 0x3000 + pixmap_handle,
+        gdevice: PPC_MAIN_GDEVICE,
+        width: 8,
+        height: 1,
+        depth: 8,
+        row_bytes: 8,
+        pixels_locked,
+        pixels_no_purge,
+        private_gdevice: false,
+    };
+    let mut gworlds = vec![record(0x10, false, true), record(0x20, false, true)];
+    let states = SharedProcessQuickDrawPixelStates::default();
+    let scans = super::super::quickdraw::pixel_state_mirror_scan_count;
+
+    let before = scans();
+    ppc_sync_gworld_pixel_state_mirrors(&mut gworlds, &states);
+    assert_eq!(scans(), before + 1);
+
+    // Repeated boundaries and LockPixels/UnlockPixels transitions preserve the
+    // synced signature without re-scanning every GWorld entry in the registry.
+    ppc_sync_gworld_pixel_state_mirrors(&mut gworlds, &states);
+    assert_eq!(scans(), before + 1);
+    assert_eq!(ppc_lock_pixels(&mut gworlds, &states, 0x10), 1);
+    assert!(gworlds[0].pixels_locked);
+    ppc_sync_gworld_pixel_state_mirrors(&mut gworlds, &states);
+    assert_eq!(scans(), before + 1);
+    ppc_unlock_pixels(&mut gworlds, &states, 0x10);
+    assert!(!gworlds[0].pixels_locked);
+    ppc_sync_gworld_pixel_state_mirrors(&mut gworlds, &states);
+    assert_eq!(scans(), before + 1);
+
+    // Cross-adapter process mutation bumps the revision and triggers one sync.
+    states.set_quickdraw_pixel_state(0x20, PPC_PIXELS_LOCKED | PPC_PIXELS_PURGEABLE);
+    ppc_sync_gworld_pixel_state_mirrors(&mut gworlds, &states);
+    assert_eq!(scans(), before + 2);
+    assert!(gworlds[1].pixels_locked && !gworlds[1].pixels_no_purge);
+
+    // Two ports can share one PixMapHandle. A transition through either must
+    // reach both mirrors before the synced signature lets the next boundary
+    // skip its scan.
+    let mut shared = gworlds[0];
+    shared.port += 0x100;
+    gworlds.push(shared);
+    ppc_sync_gworld_pixel_state_mirrors(&mut gworlds, &states);
+    assert!(!gworlds[0].pixels_locked && !gworlds[2].pixels_locked);
+    assert_eq!(ppc_lock_pixels(&mut gworlds, &states, 0x10), 1);
+    ppc_sync_gworld_pixel_state_mirrors(&mut gworlds, &states);
+    assert!(gworlds[0].pixels_locked);
+    assert!(gworlds[2].pixels_locked);
+}
+
+#[test]
+fn hot_quickdraw_and_gworld_imports_skip_handle_snapshots_except_when_recording_polygons() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+    for _ in 0..4 {
+        assert_ne!(
+            loaded
+                .process_memory_manager
+                .0
+                .borrow_mut()
+                .new_native_handle(&mut loaded.memory, 32, true),
+            0
+        );
+    }
+    let snapshots = super::super::dispatch_imports::handle_snapshot_count;
+    let rect = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(rect, vec![0; 64]);
+    ppc_write_rect(&mut loaded.memory, rect, 0, 0, 2, 2).unwrap();
+
+    let before = snapshots();
+    for target in [
+        PpcImportDispatcherTarget::GetGWorld,
+        PpcImportDispatcherTarget::SetGWorld,
+        PpcImportDispatcherTarget::GetGWorldPixMap,
+        PpcImportDispatcherTarget::LockPixels,
+        PpcImportDispatcherTarget::GetPixBaseAddr,
+        PpcImportDispatcherTarget::RGBForeColor,
+        PpcImportDispatcherTarget::PaintRect,
+        PpcImportDispatcherTarget::EraseRect,
+        PpcImportDispatcherTarget::MoveTo,
+        PpcImportDispatcherTarget::LineTo,
+        PpcImportDispatcherTarget::CopyBits,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::CopyMask,
+        ),
+        PpcImportDispatcherTarget::UnlockPixels,
+    ] {
+        loaded.cpu.gpr[3] = match target {
+            PpcImportDispatcherTarget::SetGWorld | PpcImportDispatcherTarget::GetGWorldPixMap => {
+                PPC_MAIN_GWORLD
+            }
+            PpcImportDispatcherTarget::LockPixels
+            | PpcImportDispatcherTarget::UnlockPixels
+            | PpcImportDispatcherTarget::GetPixBaseAddr => PPC_MAIN_PIXMAP_HANDLE,
+            _ => rect,
+        };
+        loaded.cpu.gpr[4] = rect;
+        loaded.cpu.gpr[5] = rect;
+        loaded.cpu.gpr[6] = rect;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        run_test_import(&mut loaded, target);
+    }
+    assert_eq!(snapshots(), before);
+
+    // MoveTo/LineTo while recording an open polygon DO need the handle snapshot.
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::OpenPoly);
+    let after_open = snapshots();
+    assert!(after_open > before);
+    loaded.cpu.gpr[3] = 4;
+    loaded.cpu.gpr[4] = 5;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LineTo);
+    assert_eq!(snapshots(), after_open + 1);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ClosePoly);
+}

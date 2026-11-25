@@ -143,6 +143,105 @@ fn movie_poll_uses_no_handle_snapshot(target: &PpcImportDispatcherTarget, cpu: &
     }
 }
 
+// These QuickDraw blits, shape/color/pen primitives, and GWorld state accessors
+// address guest memory and port/GWorld records directly, never inspecting or
+// mutating the ABI handle-record snapshot. Line/pen moves only touch `handles`
+// while recording into an open polygon (`polySave` at port + 100).
+fn graphics_import_uses_no_handle_snapshot(
+    target: &PpcImportDispatcherTarget,
+    memory: &mut PpcSectionMem,
+    current_gworld: u32,
+) -> bool {
+    match target {
+        PpcImportDispatcherTarget::UnpackBits
+        | PpcImportDispatcherTarget::CopyBits
+        | PpcImportDispatcherTarget::StdBits
+        | PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::CopyMask
+            | PpcQuickDrawCompatibilityOperation::CopyDeepMask,
+        )
+        | PpcImportDispatcherTarget::PixMap32Bit
+        | PpcImportDispatcherTarget::GetPortPixMap
+        | PpcImportDispatcherTarget::GetQDGlobalsThePort
+        | PpcImportDispatcherTarget::GetPort
+        | PpcImportDispatcherTarget::GetPortBitMapForCopyBits
+        | PpcImportDispatcherTarget::GetPortBounds
+        | PpcImportDispatcherTarget::GetWindowPort
+        | PpcImportDispatcherTarget::SetPort
+        | PpcImportDispatcherTarget::SetPortWindowPort
+        | PpcImportDispatcherTarget::SetPortDialogPort
+        | PpcImportDispatcherTarget::QDError
+        | PpcImportDispatcherTarget::QDDone
+        | PpcImportDispatcherTarget::GetGWorld
+        | PpcImportDispatcherTarget::SetGWorld
+        | PpcImportDispatcherTarget::GetGWorldDevice
+        | PpcImportDispatcherTarget::GetGWorldPixMap
+        | PpcImportDispatcherTarget::SetPortBits { .. }
+        | PpcImportDispatcherTarget::GetPixBaseAddr
+        | PpcImportDispatcherTarget::GetPixRowBytes
+        | PpcImportDispatcherTarget::LockPixels
+        | PpcImportDispatcherTarget::UnlockPixels
+        | PpcImportDispatcherTarget::GetPixelsState
+        | PpcImportDispatcherTarget::SetPixelsState
+        | PpcImportDispatcherTarget::AllowPurgePixels
+        | PpcImportDispatcherTarget::NoPurgePixels
+        | PpcImportDispatcherTarget::SetOrigin
+        | PpcImportDispatcherTarget::GetForeColor
+        | PpcImportDispatcherTarget::SaveFore
+        | PpcImportDispatcherTarget::GetBackColor
+        | PpcImportDispatcherTarget::SaveBack
+        | PpcImportDispatcherTarget::ForeColor
+        | PpcImportDispatcherTarget::BackColor
+        | PpcImportDispatcherTarget::RGBForeColor
+        | PpcImportDispatcherTarget::RestoreFore
+        | PpcImportDispatcherTarget::RGBBackColor
+        | PpcImportDispatcherTarget::RestoreBack
+        | PpcImportDispatcherTarget::OpColor
+        | PpcImportDispatcherTarget::HiliteColor
+        | PpcImportDispatcherTarget::PmForeColor
+        | PpcImportDispatcherTarget::PmBackColor
+        | PpcImportDispatcherTarget::PaintRect
+        | PpcImportDispatcherTarget::EraseRect
+        | PpcImportDispatcherTarget::InvertRect
+        | PpcImportDispatcherTarget::FrameRect
+        | PpcImportDispatcherTarget::FillRect
+        | PpcImportDispatcherTarget::FillCRect
+        | PpcImportDispatcherTarget::FrameOval
+        | PpcImportDispatcherTarget::PaintOval
+        | PpcImportDispatcherTarget::EraseOval
+        | PpcImportDispatcherTarget::PaintArc
+        | PpcImportDispatcherTarget::InvertRoundRect
+        | PpcImportDispatcherTarget::EraseRoundRect
+        | PpcImportDispatcherTarget::FillRoundRect
+        | PpcImportDispatcherTarget::FrameRoundRect
+        | PpcImportDispatcherTarget::PaintRoundRect
+        | PpcImportDispatcherTarget::FrameRgn
+        | PpcImportDispatcherTarget::EraseRgn
+        | PpcImportDispatcherTarget::PaintRgn
+        | PpcImportDispatcherTarget::FillRgn
+        | PpcImportDispatcherTarget::FillCRgn
+        | PpcImportDispatcherTarget::InvertRgn
+        | PpcImportDispatcherTarget::QuickDrawShape(_)
+        | PpcImportDispatcherTarget::GetPen
+        | PpcImportDispatcherTarget::HidePen
+        | PpcImportDispatcherTarget::ShowPen
+        | PpcImportDispatcherTarget::PenSize
+        | PpcImportDispatcherTarget::PenMode
+        | PpcImportDispatcherTarget::PenNormal
+        | PpcImportDispatcherTarget::PenPixPat
+        | PpcImportDispatcherTarget::GetPenState
+        | PpcImportDispatcherTarget::SetPenState => true,
+        PpcImportDispatcherTarget::MoveTo
+        | PpcImportDispatcherTarget::Move
+        | PpcImportDispatcherTarget::LineTo
+        | PpcImportDispatcherTarget::Line
+        | PpcImportDispatcherTarget::StdLine => {
+            regions::ppc_open_polygon(memory, current_gworld).is_none()
+        }
+        _ => false,
+    }
+}
+
 // These helpers read/write caller-owned Points and Rects. They neither inspect
 // handle records nor observe the legacy GWorld state mirrors.
 fn geometry_uses_only_guest_memory(target: &PpcImportDispatcherTarget) -> bool {
@@ -341,6 +440,11 @@ pub(crate) fn dispatch_supported_import(
     // next import observes its canonical records immediately.
     let handles = &mut if no_graphics_snapshot
         || movie_poll_uses_no_handle_snapshot(&binding.dispatcher_target, cpu)
+        || graphics_import_uses_no_handle_snapshot(
+            &binding.dispatcher_target,
+            memory,
+            *current_gworld,
+        )
     {
         Vec::new()
     } else {
