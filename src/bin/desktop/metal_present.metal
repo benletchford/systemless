@@ -176,9 +176,27 @@ static uint compact_sample_rgb(
     uint scale = frame.scale;
     x += frame.crop_left * scale;
     y += frame.crop_top * scale;
-    uint cell = cells[(y / scale) * frame.width + x / scale];
+    uint cell_index;
+    uint detail_offset;
+    if (scale == 2) {
+        cell_index = (y >> 1) * frame.width + (x >> 1);
+        detail_offset = ((y & 1) << 1) | (x & 1);
+    } else if (scale == 4) {
+        cell_index = (y >> 2) * frame.width + (x >> 2);
+        detail_offset = ((y & 3) << 2) | (x & 3);
+    } else if (scale == 1) {
+        cell_index = y * frame.width + x;
+        detail_offset = 0;
+    } else if (scale == 3) {
+        cell_index = (y / 3) * frame.width + (x / 3);
+        detail_offset = (y % 3) * 3 + (x % 3);
+    } else {
+        cell_index = (y / scale) * frame.width + (x / scale);
+        detail_offset = (y % scale) * scale + (x % scale);
+    }
+    uint cell = cells[cell_index];
     return (cell & 0x80000000) != 0
-        ? detail[(cell & 0x7fffffff) + (y % scale) * scale + x % scale]
+        ? detail[(cell & 0x7fffffff) + detail_offset]
         : cell;
 }
 
@@ -196,6 +214,11 @@ fragment float4 compact_fragment(
     uint dh = frame.dh;
     bool shrink_x = sw > dw;
     bool shrink_y = sh > dh;
+    if (!shrink_x && !shrink_y) {
+        uint sx = (sw == dw) ? x : min((2 * x + 1) * sw / (2 * dw), sw - 1);
+        uint sy = (sh == dh) ? y : min((2 * y + 1) * sh / (2 * dh), sh - 1);
+        return unpack_argb(compact_sample_rgb(cells, detail, frame, sx, sy));
+    }
     uint left = x * sw;
     uint right = (x + 1) * sw;
     uint top = y * sh;
