@@ -393,6 +393,7 @@ impl PresentationSlot {
                 if !p.may_have_offscreen_detail(address, end) {
                     return;
                 }
+                let mut consumed_kept = false;
                 if p.guest_stores {
                     // Guest code recoloring offscreen text in place (a
                     // pressed button drawn through the screen's base address)
@@ -403,7 +404,8 @@ impl PresentationSlot {
                     // too (`keep_run_removals`).
                     let mut cells = p.offscreen.range(address, end);
                     let kept = p.offscreen.take_kept(address, end);
-                    if !kept.is_empty() {
+                    consumed_kept = !kept.is_empty();
+                    if consumed_kept {
                         cells.extend(kept);
                         cells.sort_unstable_by_key(|&(cell_address, _)| cell_address);
                     }
@@ -421,6 +423,8 @@ impl PresentationSlot {
                 };
                 if removed {
                     p.changed(false);
+                }
+                if removed || consumed_kept {
                     p.forget_emptied_offscreen_pages(address, end);
                 }
             } else if p.observes_range(address, bytes.len()) {
@@ -1437,12 +1441,6 @@ impl Presentation {
         }
     }
 
-    /// Clear the offscreen page bits of `[address, end)` whose pages no
-    /// longer hold a cell. A guest that composes frames over text it drew
-    /// earlier erases that text's cells store by store; its pages then stop
-    /// being observed, so later stores to them take the plain paths again.
-    /// Drawing text there again marks the page afresh and reports it (see
-    /// `include_offscreen_address`).
     /// `OffscreenDetail::keep_run_removals`, ending the observation of the
     /// pages left holding nothing once kept cells are forgotten.
     fn keep_run_removals(&mut self, keep: bool) {
@@ -1457,6 +1455,12 @@ impl Presentation {
         }
     }
 
+    /// Clear the offscreen page bits of `[address, end)` whose pages no
+    /// longer hold a cell. A guest that composes frames over text it drew
+    /// earlier erases that text's cells store by store; its pages then stop
+    /// being observed, so later stores to them take the plain paths again.
+    /// Drawing text there again marks the page afresh and reports it (see
+    /// `include_offscreen_address`).
     fn forget_emptied_offscreen_pages(&mut self, address: u32, end: u64) {
         let page_bytes = 1u64 << STORE_FILTER_PAGE_SHIFT;
         let mut page = u64::from(address) & !(page_bytes - 1);
@@ -8149,7 +8153,6 @@ mod tests {
     /// cell (5, ink 9 in its samples) followed by two ink cells (9, background
     /// 5 in theirs), one per row as a label's last rows are.
     fn offscreen_text_run() -> (MacMemoryBus, crate::memory::GuestAddressSpace, [u32; 3]) {
-        use ppc::PpcMemory;
         let mut bus = bus();
         let mut memory = crate::memory::GuestAddressSpace::new();
         let base = 0x0100_0000;
@@ -8218,7 +8221,9 @@ mod tests {
         // A fill: the background and the ink both become 7.
         // An overdraw that stops after its first store: the ink cells run
         // damage removed are never rewritten, so nothing recolors them.
-        for stores in [&[7u8, 7, 7][..], &[7]] {
+        // An inconsistent last store consumes the final kept cell just as
+        // the mapping becomes invalid. Its empty page must be forgotten.
+        for stores in [&[7u8, 7, 7][..], &[7], &[7, 9, 7]] {
             let (bus, mut memory, cells) = offscreen_text_run();
             memory.presentation().set_guest_stores(true);
             for (&address, &value) in cells.iter().zip(stores) {
