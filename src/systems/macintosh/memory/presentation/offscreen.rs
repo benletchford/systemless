@@ -890,6 +890,7 @@ impl OffscreenDetail {
             return false;
         }
         let mut removed = false;
+        let mut rewritten_witnesses = Vec::new();
         // The first and last address changed of each run.
         let mut runs: Vec<(u32, (u32, u32))> = Vec::new();
         for (offset, &byte) in bytes.iter().enumerate() {
@@ -906,8 +907,14 @@ impl OffscreenDetail {
                 // is damaged, a store over it is part of what is drawing over
                 // the run, and the cell no longer shows the run holds text.
                 let run = chunk.runs[slot];
-                if run != 0 && !self.damage.is_empty() && self.damage.contains_key(&run) {
+                if run != 0 && !self.damage.is_empty() {
+                    let Some(damage) = self.damage.get(&run) else { continue };
                     chunk.rewritten[slot] = run;
+                    if (damage.witness.0 == address || damage.witness.1 == address)
+                        && !rewritten_witnesses.contains(&run)
+                    {
+                        rewritten_witnesses.push(run);
+                    }
                 }
                 continue;
             }
@@ -974,8 +981,22 @@ impl OffscreenDetail {
                 }
             }
         }
+        // A store can invalidate the last text witness without changing a byte.
+        for run in rewritten_witnesses {
+            let Some(damage) = self.damage.get(&run) else { continue };
+            let (a, b) = damage.witness;
+            if self.holds_untouched_run_cell(a, run) && self.holds_untouched_run_cell(b, run) {
+                continue;
+            }
+            if let Some(witness) = self.text_witness(run, from) {
+                self.damage.get_mut(&run).unwrap().witness = witness;
+            } else {
+                self.damage.remove(&run);
+                ended.push(run);
+            }
+        }
         if !ended.is_empty() {
-            self.remove_runs(&ended);
+            removed |= self.remove_runs(&ended) != 0;
         }
         removed
     }
@@ -1442,6 +1463,20 @@ mod tests {
                 store.remove_changed(address, &[colour]);
             }
         }
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn unchanged_tail_stores_finish_replacing_a_damaged_run() {
+        let mut store = OffscreenDetail::default();
+        store.set_run(1);
+        store.insert(0x4000, &cell(9, &[9, 9, 9, 5], &[]));
+        store.insert(0x4100, &cell(9, &[9, 9, 9, 5], &[]));
+        store.insert(0x4200, &cell(5, &[5, 9, 5, 5], &[]));
+        store.set_run(0);
+        assert!(store.remove_changed(0x4000, &[7]));
+        store.remove_changed(0x4100, &[9]);
+        store.remove_changed(0x4200, &[5]);
         assert_eq!(store.len(), 0);
     }
 
