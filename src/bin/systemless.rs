@@ -2360,17 +2360,22 @@ impl App {
             presentation_rect = content;
             let palette = &frame.screen.palette;
             if let Some(surface) = self.surface.as_mut().filter(|_| frame.retained.is_none()) {
-                let presented_directly = surface
-                    .present_guest_frame(
-                        framebuffer,
-                        screen_mode,
-                        (content.left, content.top, content.width, content.height),
-                        palette,
-                        cursor.as_ref().map(|image| (image, mouse_pos)),
-                        (buf_w, buf_h),
-                        force_gpu_present,
-                    )
-                    .expect("Failed to present native guest framebuffer");
+                let presented_directly = match surface.present_guest_frame(
+                    framebuffer,
+                    screen_mode,
+                    (content.left, content.top, content.width, content.height),
+                    palette,
+                    cursor.as_ref().map(|image| (image, mouse_pos)),
+                    (buf_w, buf_h),
+                    force_gpu_present,
+                ) {
+                    Ok(presented) => presented,
+                    Err(error) => {
+                        drop(core_animation_transaction.take());
+                        self.recover_mac_presenter(error);
+                        return;
+                    }
+                };
                 if let Some(transaction) = core_animation_transaction.take() {
                     drop(transaction);
                     surface.set_transactional_presentation(false);
@@ -2480,19 +2485,25 @@ impl App {
                 retained.as_ref(),
             ) {
                 let _timing = FramePhaseTimer::new("compact presentation submission");
-                let presented = surface
-                    .present_compact(
-                        image,
-                        (
-                            presentation_rect.left,
-                            presentation_rect.top,
-                            presentation_rect.width,
-                            presentation_rect.height,
-                        ),
-                        (buf_w, buf_h),
-                        force_gpu_present,
-                    )
-                    .expect("Failed to present compact Metal frame");
+                let presented = match surface.present_compact(
+                    image,
+                    (
+                        presentation_rect.left,
+                        presentation_rect.top,
+                        presentation_rect.width,
+                        presentation_rect.height,
+                    ),
+                    (buf_w, buf_h),
+                    force_gpu_present,
+                ) {
+                    Ok(presented) => presented,
+                    Err(error) => {
+                        drop(core_animation_transaction.take());
+                        self.frame_argb = frame_argb;
+                        self.recover_mac_presenter(error);
+                        return;
+                    }
+                };
                 if presented {
                     if let Some(transaction) = core_animation_transaction.take() {
                         drop(transaction);
@@ -2693,24 +2704,31 @@ impl App {
             };
             let _timing = FramePhaseTimer::new("raster presentation submission");
             if let Some((width, height)) = borrowed_size {
-                surface
-                    .present(
-                        self.retained_frame_cache.pixels(),
-                        width,
-                        height,
-                        buf_w,
-                        buf_h,
-                    )
-                    .expect("Failed to present framebuffer");
+                if let Err(error) = surface.present(
+                    self.retained_frame_cache.pixels(),
+                    width,
+                    height,
+                    buf_w,
+                    buf_h,
+                ) {
+                    drop(core_animation_transaction.take());
+                    self.recover_mac_presenter(error);
+                    return;
+                }
             } else {
-                frame_argb = surface
-                    .present_owned(
-                        frame_argb,
-                        presentation_layout(presentation_rect, game_w),
-                        buf_w,
-                        buf_h,
-                    )
-                    .expect("Failed to present framebuffer");
+                frame_argb = match surface.present_owned(
+                    frame_argb,
+                    presentation_layout(presentation_rect, game_w),
+                    buf_w,
+                    buf_h,
+                ) {
+                    Ok(pixels) => pixels,
+                    Err(error) => {
+                        drop(core_animation_transaction.take());
+                        self.recover_mac_presenter(error);
+                        return;
+                    }
+                };
             }
         }
 
@@ -3494,7 +3512,7 @@ impl App {
 
 impl ApplicationHandler for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, (): ()) {
-        if self.check_wgpu_health() && self.frame.sequence != 0 && !self.closing {
+        if self.check_presenter_health() && self.frame.sequence != 0 && !self.closing {
             self.present_frame(std::time::Instant::now());
         }
         // Upload the latest prepared image. Do not execute the guest, change
@@ -3780,7 +3798,7 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.check_wgpu_health() && self.frame.sequence != 0 && !self.closing {
+        if self.check_presenter_health() && self.frame.sequence != 0 && !self.closing {
             self.present_frame(std::time::Instant::now());
         }
         if self.owner.is_none() && self.driver.is_none() {

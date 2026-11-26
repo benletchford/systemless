@@ -1191,6 +1191,26 @@ impl MetalPresenter {
         Ok(true)
     }
 
+    pub(super) fn worker_error(&self) -> Option<String> {
+        self.async_guest_presenter
+            .mailbox
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .error
+            .clone()
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(super) fn inject_worker_error(&self) {
+        self.async_guest_presenter
+            .mailbox
+            .state
+            .lock()
+            .unwrap()
+            .error = Some("qualification: injected Metal worker failure".into());
+    }
+
     /// Whether retained text frames may be resolved by
     /// [`Self::present_compact`]. `SYSTEMLESS_METAL_COMPACT=0` keeps the CPU
     /// resampler for comparison.
