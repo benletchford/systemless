@@ -16,7 +16,7 @@ class Cases(unittest.TestCase):
         return json.loads(result.stdout) if valid else None
 
     def test_normal_matrix_is_complete(self):
-        self.assertEqual(len(self.run_cases()), 38)
+        self.assertEqual(len(self.run_cases()), 40 if sys.platform == "darwin" else 38)
 
     def test_soak_defaults_to_six_cases(self):
         self.assertEqual(len(self.run_cases("--soak-only", "--soak-seconds", "30")), 6)
@@ -59,7 +59,7 @@ class Cases(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("qualifier", path)
         qualifier = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(qualifier)
-        self.assertEqual(qualifier.native_matrix_timeout(SCRIPT, []), 38 * 120 + 60)
+        self.assertEqual(qualifier.native_matrix_timeout(SCRIPT, []), (40 if sys.platform == "darwin" else 38) * 120 + 60)
         for selectors, count in (([], 6), (["--runtime", "inline"], 3),
                                  (["--presenter", "wgpu"], 2),
                                  (["--runtime", "thread", "--presenter", "software"], 1)):
@@ -71,7 +71,7 @@ class Cases(unittest.TestCase):
         self.run_cases("--soak-only", "--soak-seconds", "21601", "--runtime", "inline", "--presenter", "wgpu", valid=False)
         self.run_cases("--soak-seconds", "-1", valid=False)
         self.run_cases("--recovery-only", "--soak-seconds", "1", valid=False)
-        self.assertEqual(len(self.run_cases("--recovery-only")), 24)
+        self.assertEqual(len(self.run_cases("--recovery-only")), 26 if sys.platform == "darwin" else 24)
 
 
 if __name__ == "__main__":

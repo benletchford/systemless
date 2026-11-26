@@ -273,7 +273,24 @@ impl Probe {
                     self.app.frame.generation, *generation,
                     "renderer transition restarted the guest"
                 );
-                if self.fault == "software-recreate" {
+                if self.fault == "metal-worker" {
+                    #[cfg(target_os = "macos")]
+                    if self.injected == 0 {
+                        let Some(mac_present::Presenter::Metal(metal)) = &self.app.surface else {
+                            panic!("expected Metal before injected failure");
+                        };
+                        metal.inject_worker_error();
+                        self.fault_sequence = self.app.frame.sequence;
+                        self.injected += 1;
+                        return;
+                    }
+                    if self.app.frame.sequence <= self.fault_sequence + 2 {
+                        return;
+                    }
+                    assert!(self.app.use_software);
+                    self.checks
+                        .push("Metal worker failure preserves the guest and switches to software");
+                } else if self.fault == "software-recreate" {
                     if self.app.frame.sequence <= self.fault_sequence + 2 {
                         return;
                     }

@@ -320,7 +320,35 @@ impl App {
             )),
         }
     }
-    pub(super) fn check_wgpu_health(&mut self) -> bool {
+    #[cfg(target_os = "macos")]
+    pub(super) fn recover_mac_presenter(&mut self, error: String) {
+        if self.use_software {
+            self.stop_renderer(format!("Software presentation failed: {error}"));
+            return;
+        }
+        self.surface = None;
+        self.use_software = true;
+        self.last_presented_guest_tick = None;
+        self.force_next_render = true;
+        self.force_gpu_present = true;
+        eprintln!("[GPU] Metal presentation failed: {error}; switching to software");
+        if let Err(fallback) = self.create_platform_presenter() {
+            self.stop_renderer(format!(
+                "Metal presentation failed: {error}; software fallback failed: {fallback}"
+            ));
+        } else if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
+    pub(super) fn check_presenter_health(&mut self) -> bool {
+        #[cfg(target_os = "macos")]
+        if let Some(mac_present::Presenter::Metal(metal)) = &self.surface {
+            if let Some(error) = metal.worker_error() {
+                self.recover_mac_presenter(error);
+                return true;
+            }
+        }
         if let Some(error) = self.wgpu.as_ref().and_then(|gpu| gpu.check_health().err()) {
             self.recover_wgpu(error);
             true

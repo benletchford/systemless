@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import sys
 import shutil
 import subprocess
 import time
@@ -49,6 +50,8 @@ if not args.recovery_only and not args.soak_only:
     cases += [(backend, False, "", renderer, None) for backend in ("inline", "thread")
               for renderer in ("auto", "platform", "wgpu", "software")]
     cases += [(backend, False, "software-recreate", "software", None) for backend in ("inline", "thread")]
+if sys.platform == "darwin" and not args.soak_only:
+    cases += [(backend, False, "metal-worker", "platform", None) for backend in ("inline", "thread")]
 if args.soak_only:
     cases += [(backend, False, "", "software", None) for backend in ("inline", "thread")]
     cases = [case for case in cases
@@ -116,12 +119,14 @@ for backend, gpu, fault, renderer, fallback in cases:
             )
             gpu_requested = gpu or renderer == "wgpu"
             fell_back = gpu_requested and fault not in ("", "loss")
-            expected_renderer = ("software" if renderer == "software" or (fell_back and (fallback == "software" or fault.startswith("platform-")))
+            expected_renderer = ("software" if renderer == "software" or fault == "metal-worker" or (fell_back and (fallback == "software" or fault.startswith("platform-")))
                                  else "wgpu" if gpu_requested and not fell_back else "platform")
             software_rows = [item for item in resources if item.get("presentation_backend") == "software"]
             software_contract = True
             if expected_renderer == "software":
                 allowed = ("software", "none") if renderer == "software" else ("wgpu", "software", "none")
+                if fault == "metal-worker":
+                    allowed = ("metal", "software", "none")
                 software_contract = bool(software_rows) and all(item.get("presentation_backend") in allowed for item in resources)
                 if fallback == "software" and fault != "startup":
                     software_contract = software_contract and any(item.get("presentation_backend") == "wgpu" for item in resources)
