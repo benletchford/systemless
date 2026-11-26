@@ -416,7 +416,11 @@ pub(crate) fn ppc_open_port(
         )
         .is_none()
         || ppc_write_rgn_bbox(memory, clip_rgn, i16::MIN, i16::MIN, i16::MAX, i16::MAX).is_none()
-        || memory.write_bytes(port + 32, &[0xff; 8]).is_none()
+        // Imaging With QuickDraw (1994), Table 2-2 (p. 2-38): a new basic
+        // port's bkPat (+32) is white and its fillPat (+40) and pnPat (+58)
+        // are black. The cleared record already holds the white bkPat.
+        || memory.write_bytes(port + 40, &[0xff; 8]).is_none()
+        || memory.write_bytes(port + 58, &[0xff; 8]).is_none()
         || memory
             .write_u16_be(port + PPC_CGRAF_PORT_PN_SIZE_OFFSET, 1)
             .is_none()

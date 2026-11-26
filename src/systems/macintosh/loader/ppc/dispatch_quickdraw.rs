@@ -3341,6 +3341,10 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
                     .is_some_and(|v| v & 0xc000 == 0xc000)
                 {
                     let _ = memory.write_u32_be(current_gworld.wrapping_add(58), 0);
+                } else if current_gworld != 0 {
+                    // A basic GrafPort holds pnPat itself at +58, which
+                    // GetPenState reads back.
+                    let _ = memory.write_bytes(current_gworld.wrapping_add(58), &pattern);
                 }
             }
             PpcImportAction::ReturnPreserve
@@ -3352,10 +3356,20 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
                 // ScrollRect pixels. A prior PixPat must not continue to
                 // shadow the newly installed Pattern (IM:V V-72).
                 toolbox_startup.quickdraw_back_pattern = pattern;
-                let _ = memory.write_u32_be(
-                    current_gworld.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET),
-                    0,
-                );
+                if memory
+                    .read_u16_be(current_gworld.wrapping_add(6))
+                    .is_some_and(|v| v & 0xc000 == 0xc000)
+                {
+                    let _ = memory.write_u32_be(
+                        current_gworld.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET),
+                        0,
+                    );
+                } else if current_gworld != 0 {
+                    // Imaging With QuickDraw (1994), p. 3-48: on a basic
+                    // GrafPort the pattern "is stored in the bkPat field",
+                    // the 8 bytes at +32 that EraseRect reads.
+                    let _ = memory.write_bytes(current_gworld.wrapping_add(32), &pattern);
+                }
             }
             PpcImportAction::ReturnPreserve
         }

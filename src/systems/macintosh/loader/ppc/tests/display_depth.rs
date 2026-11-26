@@ -3011,3 +3011,111 @@ fn open_port_draws_and_transforms_coordinates_on_an_indexed_screen() {
         assert!(!resolved.known, "1-bit BitMap at ${bits_ptr:08X} has no ColorTable");
     }
 }
+
+#[test]
+fn open_port_pattern_defaults_and_basic_port_back_and_pen_patterns() {
+    // Imaging With QuickDraw (1994), Table 2-2 (p. 2-38): OpenPort gives a
+    // basic port a white bkPat and a black fillPat and pnPat. On a basic port
+    // BackPat stores its pattern in bkPat (p. 3-48), and PenPat's pattern is
+    // the pnPat GetPenState returns. PenNormal (p. 3-23) restores it to black.
+    let pef = synthetic_pef_with_import(b"OpenPort");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 0).unwrap();
+    loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+    loaded.cpu.gpr[4] = 8;
+    loaded.cpu.gpr[5] = 1;
+    loaded.cpu.gpr[6] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
+    let scratch = PPC_DATA_BASE + 0x9000;
+    loaded.memory.add_region(scratch, vec![0; 0x200]);
+    let port = scratch;
+    loaded.cpu.gpr[3] = port;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::OpenPort);
+    let pattern_at = |loaded: &mut PpcLoadedApp, address| {
+        let mut pattern = [0u8; 8];
+        loaded
+            .memory
+            .read_bytes_into(address, &mut pattern)
+            .unwrap();
+        pattern
+    };
+    assert_eq!(pattern_at(&mut loaded, port + 32), [0x00; 8], "bkPat");
+    assert_eq!(pattern_at(&mut loaded, port + 40), [0xff; 8], "fillPat");
+    assert_eq!(pattern_at(&mut loaded, port + 58), [0xff; 8], "pnPat");
+
+    // EraseRect on the new port erases to white.
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, port).unwrap();
+    let row_bytes = surface.front_buffer.row_bytes;
+    let seed_rows = |loaded: &mut PpcLoadedApp| {
+        for y in 30..40u32 {
+            loaded
+                .memory
+                .write_bytes(PPC_MAIN_SCREEN_BASE + y * row_bytes + 30, &[0x55; 10])
+                .unwrap();
+        }
+    };
+    seed_rows(&mut loaded);
+    let rect = scratch + 0x180;
+    ppc_write_rect(&mut loaded.memory, rect, 30, 30, 40, 40).unwrap();
+    loaded.cpu.gpr[3] = rect;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::EraseRect);
+    let white = ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (35, 35));
+    assert_eq!(white, Some(0), "EraseRect with the default bkPat");
+
+    // BackPat stores the pattern in the basic port's bkPat; EraseRect uses it.
+    let pattern_ptr = scratch + 0x1c0;
+    loaded.memory.write_bytes(pattern_ptr, &[0xff; 8]).unwrap();
+    loaded.cpu.gpr[3] = pattern_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::BackPat,
+        ),
+    );
+    assert_eq!(
+        pattern_at(&mut loaded, port + 32),
+        [0xff; 8],
+        "bkPat after BackPat"
+    );
+    seed_rows(&mut loaded);
+    loaded.cpu.gpr[3] = rect;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::EraseRect);
+    assert_ne!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (35, 35)),
+        white,
+        "EraseRect with a black bkPat"
+    );
+
+    // PenPat stores the pattern in the basic port's pnPat, which GetPenState
+    // returns after pnLoc, pnSize and pnMode.
+    let gray = [0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55];
+    loaded.memory.write_bytes(pattern_ptr, &gray).unwrap();
+    loaded.cpu.gpr[3] = pattern_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::PenPat,
+        ),
+    );
+    assert_eq!(
+        pattern_at(&mut loaded, port + 58),
+        gray,
+        "pnPat after PenPat"
+    );
+    let state = scratch + 0x1d0;
+    loaded.cpu.gpr[3] = state;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPenState);
+    assert_eq!(
+        pattern_at(&mut loaded, state + 10),
+        gray,
+        "GetPenState pnPat"
+    );
+
+    // PenNormal restores a black pnPat (Imaging With QuickDraw p. 3-23).
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PenNormal);
+    assert_eq!(
+        pattern_at(&mut loaded, port + 58),
+        [0xff; 8],
+        "pnPat after PenNormal"
+    );
+}
