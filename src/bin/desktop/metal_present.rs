@@ -165,6 +165,12 @@ struct GuestFrameMailboxState {
 }
 
 impl GuestFrameMailboxState {
+    /// Keep the latest frame queued until the worker can draw it.
+    fn take_for_drawable<D>(&mut self, drawable: Option<D>) -> Option<(D, GuestFrameSubmission)> {
+        let drawable = drawable?;
+        Some((drawable, self.pending.take()?))
+    }
+
     /// Return a submission's storage to the pool its format came from.
     fn recycle(&mut self, pixels: FramePixels) {
         match pixels {
@@ -585,11 +591,16 @@ impl GuestRenderWorker {
                 drop(drawable);
                 continue;
             }
-            let Some(submission) = state.pending.take() else {
+            let Some((drawable, submission)) = state.take_for_drawable(drawable) else {
                 state.drawable_in_use = false;
                 mailbox.changed.notify_all();
-                drop(state);
-                drop(drawable);
+                // nextDrawable can return immediately when the layer is unavailable.
+                // Back off while allowing shutdown or a transaction to interrupt us.
+                let _wait = mailbox.changed.wait_timeout_while(
+                    state,
+                    Duration::from_millis(16),
+                    |s| !s.shutdown && !s.paused,
+                ).unwrap_or_else(|error| error.into_inner());
                 continue;
             };
             state.active = true;
@@ -598,10 +609,7 @@ impl GuestRenderWorker {
             let render_start = Instant::now();
             // Command buffers, pass descriptors, and driver bookkeeping may
             // also autorelease objects while encoding the frame.
-            let result = autoreleasepool(|_| match drawable {
-                Some(drawable) => self.submit(&submission, &drawable),
-                None => Ok(()),
-            });
+            let result = autoreleasepool(|_| self.submit(&submission, &drawable));
             let render_time = render_start.elapsed();
 
             let mut state = mailbox
@@ -2584,6 +2592,8 @@ pub(crate) mod tests {
             layout,
             FrameMetadata::Guest(metadata.clone()),
         );
+        assert!(state.take_for_drawable(None::<()>).is_none());
+        assert_eq!(state.pending.as_ref().unwrap().pixels.as_bytes(), &[1, 2, 3, 4]);
         replace_pending_guest_frame(
             &mut state,
             &[5, 6, 7, 8],
@@ -2592,7 +2602,8 @@ pub(crate) mod tests {
         );
 
         assert_eq!(state.coalesced, 1);
-        let pending = state.pending.as_ref().unwrap();
+        let (_, pending) = state.take_for_drawable(Some(())).unwrap();
+        assert!(state.pending.is_none());
         assert_eq!(pending.pixels.as_bytes(), &[5u8, 6, 7, 8]);
         assert!(pending.metadata == FrameMetadata::Guest(metadata));
     }
