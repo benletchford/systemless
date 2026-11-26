@@ -290,6 +290,10 @@ struct Cli {
     #[arg(long = "mount", value_name = "PATH")]
     mounts: Vec<PathBuf>,
 
+    /// Copy this folder from the game's disk image to the guest startup disk and launch its application
+    #[arg(long, value_name = "VOLUME/FOLDER")]
+    install_folder: Option<String>,
+
     /// Use wgpu for desktop presentation, drawing, text, and supported 3D rendering
     #[arg(long, conflicts_with = "renderer")]
     gpu: bool,
@@ -4434,6 +4438,10 @@ fn main() {
     let cli = Cli::parse()
         .validate_renderer()
         .unwrap_or_else(|error| error.exit());
+    if let Some(folder) = &cli.install_folder {
+        // Launch preferences must be set before the runtime threads start.
+        unsafe { std::env::set_var("SYSTEMLESS_INSTALL_FOLDER", folder) };
+    }
     if let Some(size) = cli.screen_size {
         // The machine profile reads these once, on first use, so they must be
         // set before anything builds a session. An explicit CLI size takes
