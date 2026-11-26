@@ -65,6 +65,9 @@ pub(crate) fn ppc_set_pen_normal(memory: &mut PpcSectionMem, current_gworld: u32
         .is_some_and(|v| v & 0xc000 == 0xc000)
     {
         let _ = memory.write_u32_be(current_gworld + 58, 0);
+    } else {
+        // A basic GrafPort holds pnPat itself at +58.
+        let _ = memory.write_bytes(current_gworld + 58, &[0xff; 8]);
     }
 }
 
