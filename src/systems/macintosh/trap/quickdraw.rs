@@ -3043,14 +3043,14 @@ impl super::TrapDispatcher {
                         r.top, r.left, r.bottom, r.right, port, port_base, self.screen_mode.0,
                     );
                 }
-                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
-                    pict::recording_push_rect(commands, 0x0032, (r.top, r.left, r.bottom, r.right));
-                    return Some(Ok(()));
-                }
-                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
-                    return Some(Ok(()));
-                }
-                self.draw_rect(cpu, bus, &r, ShapeOp::Erase);
+                crate::quickdraw::routines::erase_rect(
+                    &mut M68kQuickDrawRoutines {
+                        dispatcher: self,
+                        cpu,
+                        bus,
+                    },
+                    rect_ptr,
+                );
                 Ok(())
             }
 
@@ -26456,3 +26456,44 @@ impl super::TrapDispatcher {
 
 #[cfg(test)]
 mod tests;
+
+/// The 68K trap dispatcher's side of the shared QuickDraw routines
+/// (`crate::quickdraw::routines`), over the current port.
+struct M68kQuickDrawRoutines<'a, C: CpuOps> {
+    dispatcher: &'a mut crate::trap::TrapDispatcher,
+    cpu: &'a mut C,
+    bus: &'a mut MacMemoryBus,
+}
+
+impl<C: CpuOps> crate::quickdraw::routines::QuickDrawRoutineContext
+    for M68kQuickDrawRoutines<'_, C>
+{
+    #[inline]
+    fn read_rect(&mut self, ptr: u32) -> Option<Rect> {
+        Some(read_rect(self.bus, ptr))
+    }
+
+    #[inline]
+    fn record_picture_rect(&mut self, opcode: u16, rect: Rect) -> bool {
+        let Some((_, _, _, _, _, commands)) = self.dispatcher.recording_picture.as_mut() else {
+            return false;
+        };
+        pict::recording_push_rect(
+            commands,
+            opcode,
+            (rect.top, rect.left, rect.bottom, rect.right),
+        );
+        true
+    }
+
+    #[inline]
+    fn pen_hidden(&mut self) -> bool {
+        self.dispatcher.pn_vis < 0
+    }
+
+    #[inline]
+    fn fill_rect_with_background(&mut self, rect: Rect) {
+        self.dispatcher
+            .draw_rect(self.cpu, self.bus, &rect, ShapeOp::Erase);
+    }
+}

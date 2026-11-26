@@ -17,4 +17,5 @@ pub(crate) mod color;
 pub mod fonts;
 pub mod gpu;
 pub(crate) mod raster;
+pub(crate) mod routines;
 pub mod text;
