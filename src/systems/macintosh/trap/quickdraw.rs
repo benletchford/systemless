@@ -25325,37 +25325,19 @@ impl super::TrapDispatcher {
 
     fn read_raw_pixpat_color_table(
         &self,
-        bus: &MacMemoryBus,
+        bus: &mut MacMemoryBus,
         table_ptr: u32,
     ) -> Option<[[u16; 3]; 256]> {
-        if table_ptr == 0 {
+        if table_ptr == 0
+            || crate::quickdraw::pixpat::color_table_count(bus, table_ptr).unwrap_or(0) > 256
+        {
             return None;
         }
-        let count = usize::from(bus.read_word(table_ptr + 6)).saturating_add(1);
-        if count == 0 || count > 256 {
-            return None;
-        }
-        // Device color tables reserve ColorSpec.value for the Color Manager;
-        // their pixel values are implicit from each entry's ordinal position.
-        // Inside Macintosh Volume V (1986), "Color QuickDraw Resource Formats".
-        let uses_implicit_values = (bus.read_word(table_ptr + 4) & 0x8000) != 0;
-        let mut clut = *self.device_clut;
-        for ordinal in 0..count {
-            let entry = table_ptr + 8 + ordinal as u32 * 8;
-            let value = if uses_implicit_values {
-                ordinal
-            } else {
-                usize::from(bus.read_word(entry))
-            };
-            if value < 256 {
-                clut[value] = [
-                    bus.read_word(entry + 2),
-                    bus.read_word(entry + 4),
-                    bus.read_word(entry + 6),
-                ];
-            }
-        }
-        Some(clut)
+        Some(crate::quickdraw::pixpat::read_color_table(
+            bus,
+            table_ptr,
+            *self.device_clut,
+        ))
     }
 
     fn raw_pixpat_pixel_value(
@@ -25391,7 +25373,7 @@ impl super::TrapDispatcher {
 
     pub(super) fn decode_raw_pixpat(
         &self,
-        bus: &MacMemoryBus,
+        bus: &mut MacMemoryBus,
         pp_handle: u32,
     ) -> Option<RawPixPat> {
         if pp_handle == 0 {
@@ -25401,64 +25383,26 @@ impl super::TrapDispatcher {
         if pp_ptr == 0 {
             return None;
         }
-
-        // Compiled 'ppat' resources keep offsets from the PixPat record;
-        // NewPixPat/MakeRGBPat records keep live handles and deliberately
-        // remain on their existing paths.
-        let pat_map_offset = bus.read_long(pp_ptr + 2);
-        let pat_data_offset = bus.read_long(pp_ptr + 6);
-        if !(28..=0x10000).contains(&pat_map_offset)
-            || !(pat_map_offset + 50..=0x200000).contains(&pat_data_offset)
-        {
-            return None;
-        }
-
-        let pat_map_ptr = pp_ptr + pat_map_offset;
-        let read_map = |base_offset: u32| {
-            let row_bytes = u32::from(bus.read_word(pat_map_ptr + base_offset) & 0x3FFF);
-            let top = bus.read_word(pat_map_ptr + base_offset + 2) as i16;
-            let left = bus.read_word(pat_map_ptr + base_offset + 4) as i16;
-            let bottom = bus.read_word(pat_map_ptr + base_offset + 6) as i16;
-            let right = bus.read_word(pat_map_ptr + base_offset + 8) as i16;
-            let pixel_size = bus.read_word(pat_map_ptr + base_offset + 28);
-            let table_offset = bus.read_long(pat_map_ptr + base_offset + 38);
-            (
-                row_bytes,
-                top,
-                left,
-                bottom,
-                right,
-                pixel_size,
-                table_offset,
-            )
-        };
-        let map_valid = |candidate: &(u32, i16, i16, i16, i16, u16, u32)| {
-            let (row_bytes, top, left, bottom, right, pixel_size, table_offset) = *candidate;
+        // Only compiled 'ppat' resources, which keep offsets from the PixPat
+        // record, with an indexed image and a colour table. NewPixPat and
+        // MakeRGBPat records keep live handles and stay on their existing
+        // paths.
+        let image = crate::quickdraw::pixpat::compiled_image(bus, pp_ptr, |map| {
+            let (row_bytes, top, left, bottom, right, pixel_size, table_offset) = *map;
             row_bytes != 0
-                && bottom > top
-                && right > left
+                && i32::from(bottom) > i32::from(top)
+                && i32::from(right) > i32::from(left)
                 && matches!(pixel_size, 1 | 2 | 4 | 8)
                 && table_offset != 0
                 && table_offset <= 0x200000
-        };
-        let raw_map = read_map(0);
-        let live_map = read_map(4);
-        let (row_bytes, top, left, bottom, right, pixel_size, table_offset) = if map_valid(&raw_map)
-        {
-            raw_map
-        } else if map_valid(&live_map) {
-            live_map
-        } else {
-            return None;
-        };
-        let clut = self.read_raw_pixpat_color_table(bus, pp_ptr + table_offset)?;
-
+        })?;
+        let clut = self.read_raw_pixpat_color_table(bus, image.table_ptr)?;
         Some(RawPixPat {
-            data_ptr: pp_ptr + pat_data_offset,
-            row_bytes,
-            width: i32::from(right) - i32::from(left),
-            height: i32::from(bottom) - i32::from(top),
-            pixel_size,
+            data_ptr: image.data_ptr,
+            row_bytes: image.row_bytes,
+            width: image.width,
+            height: image.height,
+            pixel_size: image.pixel_size,
             clut,
         })
     }
@@ -25503,95 +25447,17 @@ impl super::TrapDispatcher {
         if self.pn_vis < 0 || pp_handle == 0 {
             return self.pn_vis < 0;
         }
-        let pp_ptr = bus.read_long(pp_handle);
-        if pp_ptr == 0 {
-            reject!("nil master pointer");
-        }
-
-        // 'ppat' resources store offsets from the start of the PixPat
-        // resource instead of live Handles. NewPixPat-created records store
-        // actual handles here; those continue down the pat1Data fallback path.
-        let pat_map_offset = bus.read_long(pp_ptr + 2);
-        let pat_data_offset = bus.read_long(pp_ptr + 6);
-        if !(28..=0x10000).contains(&pat_map_offset)
-            || !(pat_map_offset + 50..=0x200000).contains(&pat_data_offset)
-        {
-            reject!(
-                "unsupported offsets patMap=${:08X} patData=${:08X}",
-                pat_map_offset,
-                pat_data_offset
-            );
-        }
-
-        let pat_map_ptr = pp_ptr + pat_map_offset;
-        let pat_data_ptr = pp_ptr + pat_data_offset;
-        let read_map = |base_offset: u32| {
-            let row_bytes = u32::from(bus.read_word(pat_map_ptr + base_offset) & 0x3FFF);
-            let top = bus.read_word(pat_map_ptr + base_offset + 2) as i16;
-            let left = bus.read_word(pat_map_ptr + base_offset + 4) as i16;
-            let bottom = bus.read_word(pat_map_ptr + base_offset + 6) as i16;
-            let right = bus.read_word(pat_map_ptr + base_offset + 8) as i16;
-            let pixel_size = bus.read_word(pat_map_ptr + base_offset + 28);
-            let table_offset = bus.read_long(pat_map_ptr + base_offset + 38);
-            (
-                row_bytes,
-                top,
-                left,
-                bottom,
-                right,
-                pixel_size,
-                table_offset,
-            )
+        let Some(pixpat) = self.decode_raw_pixpat(bus, pp_handle) else {
+            reject!("not a compiled indexed 'ppat' record");
         };
-        let map_valid = |candidate: &(u32, i16, i16, i16, i16, u16, u32)| {
-            let (row_bytes, top, left, bottom, right, pixel_size, table_offset) = *candidate;
-            row_bytes != 0
-                && i32::from(bottom) > i32::from(top)
-                && i32::from(right) > i32::from(left)
-                && matches!(pixel_size, 1 | 2 | 4 | 8)
-                && table_offset != 0
-                && table_offset <= 0x200000
-        };
-
-        // Raw 'ppat' resources store the pattern map without baseAddr
-        // (rowBytes at +0). GetPixPat-expanded records can hold a full
-        // live PixMap with baseAddr inserted (rowBytes at +4). Accept both.
-        let raw_map = read_map(0);
-        let live_map = read_map(4);
-        let (src_row_bytes, src_top, src_left, src_bottom, src_right, src_pixel_size, table_offset) =
-            if map_valid(&raw_map) {
-                raw_map
-            } else if map_valid(&live_map) {
-                live_map
-            } else {
-                let (row_bytes, top, left, bottom, right, pixel_size, table_offset) = raw_map;
-                reject!(
-                    "invalid source map raw(rowBytes={} bounds=({},{},{},{}) pixelSize={} table=${:08X}) live(rowBytes={} bounds=({},{},{},{}) pixelSize={} table=${:08X})",
-                    row_bytes,
-                    top,
-                    left,
-                    bottom,
-                    right,
-                    pixel_size,
-                    table_offset,
-                    live_map.0,
-                    live_map.1,
-                    live_map.2,
-                    live_map.3,
-                    live_map.4,
-                    live_map.5,
-                    live_map.6,
-                );
-            };
-        let src_height = i32::from(src_bottom) - i32::from(src_top);
-        let src_width = i32::from(src_right) - i32::from(src_left);
-
-        if table_offset == 0 || table_offset > 0x200000 {
-            reject!("invalid table offset ${:08X}", table_offset);
-        }
-        let Some(src_clut) = self.read_raw_pixpat_color_table(bus, pp_ptr + table_offset) else {
-            reject!("invalid color table at offset ${:08X}", table_offset);
-        };
+        let (pat_data_ptr, src_row_bytes, src_width, src_height, src_pixel_size, src_clut) = (
+            pixpat.data_ptr,
+            pixpat.row_bytes,
+            pixpat.width,
+            pixpat.height,
+            pixpat.pixel_size,
+            pixpat.clut,
+        );
 
         let port = *self.current_port;
         if port == 0 {

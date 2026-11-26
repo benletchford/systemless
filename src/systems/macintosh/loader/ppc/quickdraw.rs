@@ -1064,143 +1064,50 @@ fn ppc_decode_pixpat_sampler(
         }
     }
 
-    let pat_map_raw = memory.read_u32_be(pp_ptr + 2).unwrap_or(0);
-    let pat_data_raw = memory.read_u32_be(pp_ptr + 6).unwrap_or(0);
-
-    let compiled_candidate = if (28..=0x10000).contains(&pat_map_raw)
-        && (pat_map_raw + 50..=0x200000).contains(&pat_data_raw)
-    {
-        let pat_map_ptr = pp_ptr + pat_map_raw;
-        let pat_data_ptr = pp_ptr + pat_data_raw;
-        let mut read_map = |base_offset: u32| {
-            let row_bytes =
-                u32::from(memory.read_u16_be(pat_map_ptr + base_offset).unwrap_or(0) & 0x3FFF);
-            let top = memory
-                .read_u16_be(pat_map_ptr + base_offset + 2)
-                .unwrap_or(0) as i16;
-            let left = memory
-                .read_u16_be(pat_map_ptr + base_offset + 4)
-                .unwrap_or(0) as i16;
-            let bottom = memory
-                .read_u16_be(pat_map_ptr + base_offset + 6)
-                .unwrap_or(0) as i16;
-            let right = memory
-                .read_u16_be(pat_map_ptr + base_offset + 8)
-                .unwrap_or(0) as i16;
-            let pixel_size = memory
-                .read_u16_be(pat_map_ptr + base_offset + 28)
-                .unwrap_or(0);
-            let table_offset = memory
-                .read_u32_be(pat_map_ptr + base_offset + 38)
-                .unwrap_or(0);
-            (
-                row_bytes,
-                top,
-                left,
-                bottom,
-                right,
-                pixel_size,
-                table_offset,
-            )
-        };
-        let map_valid = |candidate: &(u32, i16, i16, i16, i16, u16, u32)| {
-            let (row_bytes, top, left, bottom, right, pixel_size, table_offset) = *candidate;
-            row_bytes != 0
-                && i32::from(bottom) > i32::from(top)
-                && i32::from(right) > i32::from(left)
-                && matches!(pixel_size, 1 | 2 | 4 | 8 | 16 | 32)
-                && (pixel_size >= 16 || table_offset != 0)
-                && table_offset <= 0x200000
-        };
-        let raw_map = read_map(0);
-        let live_map = read_map(4);
-        let chosen = if map_valid(&raw_map) {
-            Some(raw_map)
-        } else if map_valid(&live_map) {
-            Some(live_map)
-        } else {
-            None
-        };
-        chosen.map(
-            |(row_bytes, top, left, bottom, right, pixel_size, table_offset)| {
-                (
-                    row_bytes,
-                    i32::from(right) - i32::from(left),
-                    i32::from(bottom) - i32::from(top),
-                    pixel_size,
-                    pat_data_ptr,
-                    pp_ptr + table_offset,
-                )
-            },
-        )
-    } else {
-        None
-    };
-
-    let parsed = compiled_candidate.or_else(|| {
-        let pat_map_ptr = memory.read_u32_be(pat_map_raw)?;
-        if pat_map_ptr == 0 {
-            return None;
-        }
-        let row_bytes = u32::from(memory.read_u16_be(pat_map_ptr + 4)? & 0x3FFF);
-        let top = memory.read_u16_be(pat_map_ptr + 6)? as i16;
-        let left = memory.read_u16_be(pat_map_ptr + 8)? as i16;
-        let bottom = memory.read_u16_be(pat_map_ptr + 10)? as i16;
-        let right = memory.read_u16_be(pat_map_ptr + 12)? as i16;
-        let pixel_size = memory.read_u16_be(pat_map_ptr + 32)?;
-        let pm_table = memory.read_u32_be(pat_map_ptr + 42)?;
-        let pat_data_ptr = memory.read_u32_be(pat_data_raw)?;
-        let table_ptr = if pm_table != 0 {
-            memory.read_u32_be(pm_table).unwrap_or(0)
-        } else {
-            0
-        };
-        if row_bytes != 0
+    // A compiled 'ppat' resource (offsets) is tried first, then a live record
+    // (handles), as `crate::quickdraw::pixpat` reads them.
+    let parsed = crate::quickdraw::pixpat::compiled_image(memory, pp_ptr, |map| {
+        let (row_bytes, top, left, bottom, right, pixel_size, table_offset) = *map;
+        row_bytes != 0
             && i32::from(bottom) > i32::from(top)
             && i32::from(right) > i32::from(left)
             && matches!(pixel_size, 1 | 2 | 4 | 8 | 16 | 32)
-            && pat_data_ptr != 0
-        {
-            Some((
-                row_bytes,
-                i32::from(right) - i32::from(left),
-                i32::from(bottom) - i32::from(top),
-                pixel_size,
-                pat_data_ptr,
-                table_ptr,
-            ))
-        } else {
-            None
-        }
+            && (pixel_size >= 16 || table_offset != 0)
+            && table_offset <= 0x200000
+    })
+    .or_else(|| {
+        crate::quickdraw::pixpat::live_image(memory, pp_ptr).filter(|image| {
+            image.row_bytes != 0
+                && image.width > 0
+                && image.height > 0
+                && matches!(image.pixel_size, 1 | 2 | 4 | 8 | 16 | 32)
+                && image.data_ptr != 0
+        })
+    })
+    .map(|image| {
+        (
+            image.row_bytes,
+            image.width,
+            image.height,
+            image.pixel_size,
+            image.data_ptr,
+            image.table_ptr,
+        )
     });
 
     if let Some((row_bytes, width, height, pixel_size, data_ptr, table_ptr)) = parsed {
         let data_len = (height as usize).saturating_mul(row_bytes as usize);
         let mut data = vec![0u8; data_len];
         if memory.read_bytes_into(data_ptr, &mut data).is_some() {
-            let mut src_clut = TrapDispatcher::standard_mac_8bpp_clut();
-            if table_ptr != 0 {
-                let count =
-                    usize::from(memory.read_u16_be(table_ptr + 6).unwrap_or(0)).saturating_add(1);
-                let uses_implicit = (memory.read_u16_be(table_ptr + 4).unwrap_or(0) & 0x8000) != 0;
-                for ordinal in 0..count.min(256) {
-                    let entry = table_ptr + 8 + ordinal as u32 * 8;
-                    let value = if uses_implicit {
-                        ordinal
-                    } else {
-                        usize::from(memory.read_u16_be(entry).unwrap_or(0))
-                    };
-                    if value < 256 {
-                        if let (Some(r), Some(g), Some(b)) = (
-                            memory.read_u16_be(entry + 2),
-                            memory.read_u16_be(entry + 4),
-                            memory.read_u16_be(entry + 6),
-                        ) {
-                            src_clut[value] = [r, g, b];
-                        }
-                    }
-                }
-            }
+            let src_clut = if table_ptr != 0 {
+                crate::quickdraw::pixpat::read_color_table(
+                    memory,
+                    table_ptr,
+                    TrapDispatcher::standard_mac_8bpp_clut(),
+                )
+            } else {
+                TrapDispatcher::standard_mac_8bpp_clut()
+            };
 
             let dst_fallback =
                 TrapDispatcher::standard_mac_indexed_clut(surface.front_buffer.depth as u16)
