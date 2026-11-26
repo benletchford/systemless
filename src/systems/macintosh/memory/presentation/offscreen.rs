@@ -57,6 +57,10 @@ struct Chunk {
     shared: RefCell<Vec<Option<Arc<DetailCell>>>>,
     /// The text run that last drew each slot's cell (0: none).
     runs: [u32; CHUNK_BYTES],
+    /// The run each slot's cell belonged to when a guest store after that
+    /// run was damaged wrote its byte again unchanged (0: none). The mark
+    /// counts only while `runs` still names the same run.
+    rewritten: [u32; CHUNK_BYTES],
     /// The `next_generation` value of the chunk's last change.
     generation: u64,
     count: usize,
@@ -76,6 +80,7 @@ impl Chunk {
             complex: ComplexInk::new(),
             shared: RefCell::new(Vec::new()),
             runs: [0; CHUNK_BYTES],
+            rewritten: [0; CHUNK_BYTES],
             generation: next_generation(),
             count: 0,
         }
@@ -83,6 +88,12 @@ impl Chunk {
 
     fn has(&self, slot: usize) -> bool {
         self.present[slot / 64] & (1 << (slot % 64)) != 0
+    }
+
+    /// Whether `slot`'s cell, of `run`, has had its byte written again since
+    /// `run` was damaged.
+    fn rewritten(&self, slot: usize, run: u32) -> bool {
+        self.rewritten[slot] == run
     }
 
     /// Give an empty `slot` a cell of `len` samples of `background` with no
@@ -257,6 +268,7 @@ impl Chunk {
 
     fn clear(&mut self, slot: usize) {
         self.present[slot / 64] &= !(1 << (slot % 64));
+        self.rewritten[slot] = 0;
         self.count -= 1;
         if self.may_have_ink(slot) {
             self.release_ink(slot);
@@ -277,6 +289,11 @@ impl Chunk {
             }
             cleared += hit.count_ones() as usize;
             self.present[word] &= !hit;
+            let mut bits = hit;
+            while bits != 0 {
+                self.rewritten[word * 64 + bits.trailing_zeros() as usize] = 0;
+                bits &= bits - 1;
+            }
             let mut inked = self.inked[word] & hit;
             while inked != 0 {
                 let slot = word * 64 + inked.trailing_zeros() as usize;
@@ -694,6 +711,15 @@ impl OffscreenDetail {
             .is_some_and(|chunk| chunk.has(slot) && chunk.runs[slot] == run)
     }
 
+    /// Whether `address` holds a cell of `run` that no store has written
+    /// over since `run` was damaged.
+    fn holds_untouched_run_cell(&self, address: u32, run: u32) -> bool {
+        let (key, slot) = split(address);
+        self.chunks.get(&key).is_some_and(|chunk| {
+            chunk.has(slot) && chunk.runs[slot] == run && !chunk.rewritten(slot, run)
+        })
+    }
+
     /// Two remaining cells of `run` showing it still holds text: the first's
     /// byte is a colour the second shows only in its samples. Text over a
     /// background leaves cells whose byte is the ink with background
@@ -701,6 +727,11 @@ impl OffscreenDetail {
     /// Erasing it to the background changes every ink byte; filling it with
     /// the ink changes every background byte. Either way the cells left all
     /// show the same side, and would draw only the old glyphs' edges.
+    /// Only cells no store has written over since the run was damaged
+    /// count: a new picture drawn over the text in both colours keeps ink
+    /// bytes where it is the ink colour and background bytes where it is
+    /// the background colour, which together look like text, but it wrote
+    /// every one of them.
     /// The scan starts from the end of the run farther from `changed`, where
     /// a store sweeping across the run reaches last.
     fn text_witness(&mut self, run: u32, changed: u32) -> Option<(u32, u32)> {
@@ -710,7 +741,7 @@ impl OffscreenDetail {
         let mut own_at = [None::<u32>; 256];
         let mut other_at = [None::<u32>; 256];
         let mut visit = |address: u32, chunk: &Chunk, slot: usize| {
-            if chunk.runs[slot] != run {
+            if chunk.runs[slot] != run || chunk.rewritten(slot, run) {
                 return None;
             }
             let mut witness = None;
@@ -859,6 +890,7 @@ impl OffscreenDetail {
             return false;
         }
         let mut removed = false;
+        let mut rewritten_witnesses = Vec::new();
         // The first and last address changed of each run.
         let mut runs: Vec<(u32, (u32, u32))> = Vec::new();
         for (offset, &byte) in bytes.iter().enumerate() {
@@ -867,7 +899,26 @@ impl OffscreenDetail {
             let Some(chunk) = self.chunks.get_mut(&key) else {
                 continue;
             };
-            if chunk.has(slot) && chunk.values[slot] != byte {
+            if !chunk.has(slot) {
+                continue;
+            }
+            if chunk.values[slot] == byte {
+                // The byte stays, and so does its detail. But once its run
+                // is damaged, a store over it is part of what is drawing over
+                // the run, and the cell no longer shows the run holds text.
+                let run = chunk.runs[slot];
+                if run != 0 && !self.damage.is_empty() {
+                    let Some(damage) = self.damage.get(&run) else { continue };
+                    chunk.rewritten[slot] = run;
+                    if (damage.witness.0 == address || damage.witness.1 == address)
+                        && !rewritten_witnesses.contains(&run)
+                    {
+                        rewritten_witnesses.push(run);
+                    }
+                }
+                continue;
+            }
+            {
                 let run = chunk.runs[slot];
                 chunk.clear(slot);
                 self.count -= 1;
@@ -912,7 +963,9 @@ impl OffscreenDetail {
             );
             let witness = damage
                 .map(|damage| damage.witness)
-                .filter(|&(a, b)| self.holds_run_cell(a, run) && self.holds_run_cell(b, run))
+                .filter(|&(a, b)| {
+                    self.holds_untouched_run_cell(a, run) && self.holds_untouched_run_cell(b, run)
+                })
                 .or_else(|| self.text_witness(run, first));
             match witness {
                 Some(witness) => {
@@ -928,8 +981,22 @@ impl OffscreenDetail {
                 }
             }
         }
+        // A store can invalidate the last text witness without changing a byte.
+        for run in rewritten_witnesses {
+            let Some(damage) = self.damage.get(&run) else { continue };
+            let (a, b) = damage.witness;
+            if self.holds_untouched_run_cell(a, run) && self.holds_untouched_run_cell(b, run) {
+                continue;
+            }
+            if let Some(witness) = self.text_witness(run, from) {
+                self.damage.get_mut(&run).unwrap().witness = witness;
+            } else {
+                self.damage.remove(&run);
+                ended.push(run);
+            }
+        }
         if !ended.is_empty() {
-            self.remove_runs(&ended);
+            removed |= self.remove_runs(&ended) != 0;
         }
         removed
     }
@@ -1373,6 +1440,62 @@ mod tests {
         store.remove_changed(0x4100, &[7, 5]);
         store.remove_changed(0x4200, &[9, 7]);
         assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn a_picture_stored_byte_by_byte_over_the_run_leaves_no_glyph_edges() {
+        // Ink 9 over background 5 in three rows, as in the tests above.
+        let mut store = OffscreenDetail::default();
+        store.set_run(1);
+        for row in [0x4000, 0x4100, 0x4200] {
+            store.insert(row, &cell(9, &[9, 9, 9, 5], &[]));
+            store.insert(row + 1, &cell(5, &[5, 9, 5, 5], &[]));
+        }
+        store.set_run(0);
+        // Guest code draws a new picture over all of it one byte at a time:
+        // the ink colour over the first and last rows, the background colour
+        // over the middle one. Each store reaches only its own byte, so the
+        // cells whose bytes it matches stay: ink bytes on the outer rows, a
+        // background byte in the middle. Between them they still show both
+        // colours, but they are the new picture's, not the text's.
+        for (row, colour) in [(0x4000, 9), (0x4100, 5), (0x4200, 9)] {
+            for address in [row, row + 1] {
+                store.remove_changed(address, &[colour]);
+            }
+        }
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn unchanged_tail_stores_finish_replacing_a_damaged_run() {
+        let mut store = OffscreenDetail::default();
+        store.set_run(1);
+        store.insert(0x4000, &cell(9, &[9, 9, 9, 5], &[]));
+        store.insert(0x4100, &cell(9, &[9, 9, 9, 5], &[]));
+        store.insert(0x4200, &cell(5, &[5, 9, 5, 5], &[]));
+        store.set_run(0);
+        assert!(store.remove_changed(0x4000, &[7]));
+        store.remove_changed(0x4100, &[9]);
+        store.remove_changed(0x4200, &[5]);
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn stores_of_unchanged_bytes_before_any_change_keep_a_run_partly_drawn_over() {
+        // A blitter that writes back every byte of the text unchanged, then
+        // something drawn over its first row: the other rows still show it.
+        let mut store = OffscreenDetail::default();
+        store.set_run(1);
+        for row in [0x4000, 0x4100, 0x4200] {
+            store.insert(row, &cell(9, &[9, 9, 9, 5], &[]));
+            store.insert(row + 1, &cell(5, &[5, 9, 5, 5], &[]));
+        }
+        store.set_run(0);
+        for row in [0x4000, 0x4100, 0x4200] {
+            assert!(!store.remove_changed(row, &[9, 5]));
+        }
+        assert!(store.remove_changed(0x4000, &[7, 7]));
+        assert_eq!(store.len(), 4);
     }
 
     /// Cost of guest code erasing a band of retained text one byte at a
