@@ -72,16 +72,54 @@ pub(super) fn dispatch_bit_transfer_import(
             // Screen blits must not paint through windows above the current
             // port. Preserve their structure pixels, including presentation
             // detail, just as the Window Manager clips rear-window chrome.
-            let saved_front = if window_list.contains(&current_gworld)
-                && ppc_resolve_pixmap_bits_with_provenance(memory, gworlds, cpu.gpr[4])
-                    .zip(ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD))
-                    .is_some_and(|(destination, front)| {
-                        destination.bits.base_addr == front.base_addr
-                    }) {
-                ppc_front_window_occlusion_pixels(memory, gworlds, window_list, current_gworld)
-            } else {
-                None
-            };
+            // CopyBits copies srcRect into dstRect, scaling it to fit, and a
+            // copy into the current port is also clipped to its visRgn and
+            // clipRgn (Imaging With QuickDraw, 1994, pp. 3-112--3-113 and
+            // 3-116). Only pixels a copy can change are saved: none, when
+            // the port's visRgn already excludes the windows in front.
+            let screen_destination = window_list
+                .contains(&current_gworld)
+                .then(|| ppc_resolve_pixmap_bits_with_provenance(memory, gworlds, cpu.gpr[4]))
+                .flatten()
+                .zip(ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD))
+                .filter(|(destination, front)| destination.bits.base_addr == front.base_addr);
+            let saved_front = screen_destination.and_then(|(destination, _)| {
+                // Local coordinates minus bounds.topLeft are global.
+                let (dy, dx) = (destination.bits.top, destination.bits.left);
+                let limit = ppc_read_rect(memory, cpu.gpr[6]).map(|(top, left, bottom, right)| {
+                    (
+                        top.saturating_sub(dy),
+                        left.saturating_sub(dx),
+                        bottom.saturating_sub(dy),
+                        right.saturating_sub(dx),
+                    )
+                });
+                // Reading the port clip is not free, so it waits for a
+                // covered rectangle.
+                let mut port_clip: Option<Option<Vec<u8>>> = None;
+                let refine = |memory: &mut PpcSectionMem, rect| {
+                    let clip = port_clip.get_or_insert_with(|| {
+                        ppc_copy_bits_current_port_clip(
+                            memory,
+                            gworlds,
+                            current_gworld,
+                            destination.bits,
+                        )
+                    });
+                    match clip.as_deref() {
+                        Some(clip) => ppc_global_rect_within_port_clip(clip, (dy, dx), rect),
+                        None => Some(rect),
+                    }
+                };
+                ppc_front_window_occlusion_pixels_within(
+                    memory,
+                    gworlds,
+                    window_list,
+                    current_gworld,
+                    limit,
+                    refine,
+                )
+            });
             let op_color = ppc_current_op_color(memory, current_gworld, quickdraw_op_colors);
             let quickdraw_back_index = toolbox_startup
                 .quickdraw_back_indices
@@ -133,6 +171,38 @@ pub(super) fn dispatch_bit_transfer_import(
         }
         _ => None,
     }
+}
+
+/// The bounding box of the part of `rect` (global) inside a port clip region
+/// (port-local, where local minus `origin` is global), in global coordinates.
+/// None when the clip leaves none of it; `rect` itself if the clip can't be
+/// evaluated.
+fn ppc_global_rect_within_port_clip(
+    clip: &[u8],
+    (dy, dx): (i16, i16),
+    rect: (i16, i16, i16, i16),
+) -> Option<(i16, i16, i16, i16)> {
+    let mut local = vec![0, 10];
+    for value in [
+        rect.0.saturating_add(dy),
+        rect.1.saturating_add(dx),
+        rect.2.saturating_add(dy),
+        rect.3.saturating_add(dx),
+    ] {
+        local.extend_from_slice(&value.to_be_bytes());
+    }
+    let Ok(inside) = ppc_region_storage_boolean(clip, &local, PpcRegionBooleanOp::Intersection)
+    else {
+        return Some(rect);
+    };
+    ppc_region_storage_bbox(&inside).map(|(top, left, bottom, right)| {
+        (
+            top.saturating_sub(dy),
+            left.saturating_sub(dx),
+            bottom.saturating_sub(dy),
+            right.saturating_sub(dx),
+        )
+    })
 }
 
 fn ppc_unpack_bits(

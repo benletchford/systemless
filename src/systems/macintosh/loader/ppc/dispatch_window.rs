@@ -2389,9 +2389,50 @@ pub(super) fn ppc_front_window_occlusion_pixels(
     window_list: &SharedProcessWindowList,
     window: u32,
 ) -> Option<PpcOccludedWindowPixels> {
+    ppc_front_window_occlusion_pixels_within(
+        memory,
+        gworlds,
+        window_list,
+        window,
+        None,
+        |_, rect| Some(rect),
+    )
+}
+
+/// Like [`ppc_front_window_occlusion_pixels`], for a draw confined to `limit`
+/// (global top, left, bottom, right). `refine` maps each covered rectangle to
+/// the part of it the draw can still change (None for none of it), so only
+/// those pixels are saved. It is called only when windows in front cover part
+/// of what the draw can reach.
+pub(super) fn ppc_front_window_occlusion_pixels_within(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+    window: u32,
+    limit: Option<(i16, i16, i16, i16)>,
+    mut refine: impl FnMut(&mut PpcSectionMem, (i16, i16, i16, i16)) -> Option<(i16, i16, i16, i16)>,
+) -> Option<PpcOccludedWindowPixels> {
     let front_buffer = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD)?;
+    let screen = (
+        0,
+        0,
+        ppc_u32_to_i16_saturating(front_buffer.height),
+        ppc_u32_to_i16_saturating(front_buffer.width),
+    );
     let target_structure = ppc_window_global_structure_bounds(memory, gworlds, window)?;
-    let mut pixels = Vec::new();
+    let paint = crate::window_manager::rect_intersection(target_structure, screen);
+    let paint = match limit {
+        Some(limit) => paint.and_then(|p| crate::window_manager::rect_intersection(p, limit)),
+        None => paint,
+    };
+    let Some(paint) = paint else {
+        // Nothing the draw can reach is on screen: an empty save, as before
+        // for an unlimited one, and none at all for a limited one.
+        return limit.is_none().then(|| PpcOccludedWindowPixels {
+            front_buffer,
+            pixels: crate::memory::SavedPixels::from(Vec::new()),
+        });
+    };
     // The WDEF draws through the Window Manager port, whose clipRgn is
     // GrayRgn: a structure under the menu bar leaves the menu bar intact.
     let menu_bar = ppc_menu_bar_excluded_from_gray_rgn(memory).map(|(bottom, right)| (0, 0, bottom, right));
@@ -2405,24 +2446,17 @@ pub(super) fn ppc_front_window_occlusion_pixels(
         .filter_map(|front| ppc_window_global_structure_bounds(memory, gworlds, front))
         .chain(menu_bar)
         .collect::<Vec<_>>();
-    for front_structure in fronts {
-        let overlap = (
-            target_structure.0.max(front_structure.0).max(0),
-            target_structure.1.max(front_structure.1).max(0),
-            target_structure
-                .2
-                .min(front_structure.2)
-                .min(ppc_u32_to_i16_saturating(front_buffer.height)),
-            target_structure
-                .3
-                .min(front_structure.3)
-                .min(ppc_u32_to_i16_saturating(front_buffer.width)),
-        );
-        if overlap.0 >= overlap.2 || overlap.1 >= overlap.3 {
-            continue;
-        }
-        for y in i32::from(overlap.0)..i32::from(overlap.2) {
-            for x in i32::from(overlap.1)..i32::from(overlap.3) {
+    let rects = crate::window_manager::occluded_paint_rects(&[paint], fronts)
+        .into_iter()
+        .filter_map(|rect| refine(memory, rect))
+        .collect::<Vec<_>>();
+    if limit.is_some() && rects.is_empty() {
+        return None;
+    }
+    let mut pixels = Vec::new();
+    for (top, left, bottom, right) in rects {
+        for y in i32::from(top)..i32::from(bottom) {
+            for x in i32::from(left)..i32::from(right) {
                 if let Some(pixel) = ppc_quickdraw_read_pixel(memory, front_buffer, (x, y)) {
                     pixels.push((x, y, pixel));
                 }

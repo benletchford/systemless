@@ -1084,6 +1084,151 @@ fn copy_bits_does_not_overwrite_a_front_window() {
 }
 
 #[test]
+fn copy_bits_restores_front_window_pixels_its_destination_covers() {
+    // The same copy with the back port's visRgn reaching into the front
+    // window, so only the saved front-window pixels keep it intact. The
+    // copy's dstRect and the port clip are local and must be moved to global
+    // coordinates to find them.
+    let pef = synthetic_pef_with_import(b"NewCWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+    let back = create_test_cwindow(
+        &mut loaded,
+        bounds_ptr,
+        (100, 100, 260, 300),
+        0,
+        true,
+        u32::MAX,
+    );
+    let _front = create_test_cwindow(
+        &mut loaded,
+        bounds_ptr,
+        (120, 250, 280, 450),
+        0,
+        true,
+        u32::MAX,
+    );
+    let front_buffer = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let bitmap = PPC_DATA_BASE + 0x2000;
+    let pixels = bitmap + 64;
+    loaded.memory.add_region(bitmap, vec![0; 128]);
+    loaded.memory.write_u32_be(bitmap, pixels).unwrap();
+    loaded.memory.write_u16_be(bitmap + 4, 8).unwrap();
+    ppc_write_rect(&mut loaded.memory, bitmap + 6, 0, 0, 8, 64).unwrap();
+    ppc_write_rect(&mut loaded.memory, bitmap + 20, 0, 0, 8, 64).unwrap();
+    ppc_write_rect(&mut loaded.memory, bitmap + 28, 50, 100, 58, 183).unwrap();
+    loaded.cpu.gpr[3] = back;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPort);
+    let vis_rgn = loaded
+        .memory
+        .read_u32_be(back + PPC_CGRAF_PORT_VIS_RGN_OFFSET)
+        .unwrap();
+    // Port-local (40, 100)-(60, 190): global (140, 200)-(160, 290), over
+    // both checked pixels and into the front window.
+    ppc_set_rect_rgn(&mut loaded.memory, vis_rgn, 100, 40, 190, 60).unwrap();
+    for point in [(275, 150), (210, 150)] {
+        assert!(ppc_quickdraw_write_raw_pixel(
+            &mut loaded.memory,
+            front_buffer,
+            point,
+            0x7b,
+        ));
+    }
+    loaded.cpu.gpr[3] = bitmap;
+    loaded.cpu.gpr[4] = back + 2;
+    loaded.cpu.gpr[5] = bitmap + 20;
+    loaded.cpu.gpr[6] = bitmap + 28;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CopyBits);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front_buffer, (275, 150)),
+        Some(0x7b),
+        "CopyBits painted a back window through the front window"
+    );
+    assert_ne!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front_buffer, (210, 150)),
+        Some(0x7b),
+        "CopyBits must still update the unobscured back window"
+    );
+}
+
+#[test]
+fn copy_bits_occlusion_save_covers_only_the_destination_rectangle() {
+    let pef = synthetic_pef_with_import(b"NewCWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+    let back = create_test_cwindow(
+        &mut loaded,
+        bounds_ptr,
+        (100, 100, 260, 300),
+        0,
+        true,
+        u32::MAX,
+    );
+    let _front = create_test_cwindow(
+        &mut loaded,
+        bounds_ptr,
+        (120, 250, 280, 450),
+        0,
+        true,
+        u32::MAX,
+    );
+    // A second front window over the first: the overlap is saved once.
+    let _frontmost = create_test_cwindow(
+        &mut loaded,
+        bounds_ptr,
+        (140, 240, 200, 330),
+        0,
+        true,
+        u32::MAX,
+    );
+    let save = |loaded: &mut PpcLoadedApp, limit| {
+        ppc_front_window_occlusion_pixels_within(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &loaded.window_list,
+            back,
+            limit,
+            |_, rect| Some(rect),
+        )
+    };
+    let whole = save(&mut loaded, None).expect("the windows overlap");
+    let mut points = whole
+        .pixels
+        .iter()
+        .map(|&(x, y, _)| (x, y))
+        .collect::<Vec<_>>();
+    let count = points.len();
+    points.sort_unstable();
+    points.dedup();
+    assert_eq!(points.len(), count, "each covered pixel is saved once");
+    let limit = (150, 240, 152, 260);
+    let within = save(&mut loaded, Some(limit)).expect("the limit meets the overlap");
+    assert!(!within.pixels.is_empty());
+    assert!(within.pixels.len() < whole.pixels.len());
+    assert!(within.pixels.iter().all(|&(x, y, _)| {
+        (i32::from(limit.0)..i32::from(limit.2)).contains(&y)
+            && (i32::from(limit.1)..i32::from(limit.3)).contains(&x)
+    }));
+    assert!(
+        whole
+            .pixels
+            .iter()
+            .filter(|&&(x, y, _)| (150..152).contains(&y) && (240..260).contains(&x))
+            .count()
+            == within.pixels.len(),
+        "the limited save keeps every overlap pixel inside the limit"
+    );
+    assert!(
+        save(&mut loaded, Some((150, 110, 160, 200))).is_none(),
+        "a destination clear of every front window saves nothing"
+    );
+}
+
+#[test]
 fn ppc_direct_chrome_redraw_does_not_paint_back_window_through_front_content() {
     // ClipAbove removes every front structure region before the Window
     // Manager asks a rear WDEF to draw. Macintosh Toolbox Essentials

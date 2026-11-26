@@ -514,6 +514,56 @@ where
         .collect()
 }
 
+/// The intersection of two rectangles, if not empty.
+pub(crate) fn rect_intersection(a: WindowRect, b: WindowRect) -> Option<WindowRect> {
+    let rect = (a.0.max(b.0), a.1.max(b.1), a.2.min(b.2), a.3.min(b.3));
+    (rect.2 > rect.0 && rect.3 > rect.1).then_some(rect)
+}
+
+/// `src` minus `cut`, as up to four disjoint rectangles.
+pub(crate) fn rect_difference_parts(src: WindowRect, cut: WindowRect) -> Vec<WindowRect> {
+    let Some(intersection) = rect_intersection(src, cut) else {
+        return vec![src];
+    };
+    [
+        (src.0, src.1, intersection.0, src.3),
+        (intersection.2, src.1, src.2, src.3),
+        (intersection.0, src.1, intersection.2, intersection.1),
+        (intersection.0, intersection.3, intersection.2, src.3),
+    ]
+    .into_iter()
+    .filter(|rect| rect.2 > rect.0 && rect.3 > rect.1)
+    .collect()
+}
+
+/// The parts of `paint_parts` that `front_structures` cover, as disjoint
+/// rectangles. A native draw that writes screen RAM directly saves these
+/// pixels first and restores them after, as ClipAbove would have kept the
+/// draw off windows in front. Macintosh Toolbox Essentials (1992), pp. 4-106
+/// and 4-118--4-119.
+pub(crate) fn occluded_paint_rects(
+    paint_parts: &[WindowRect],
+    front_structures: impl IntoIterator<Item = WindowRect>,
+) -> Vec<WindowRect> {
+    let mut occluded_parts: Vec<WindowRect> = Vec::new();
+    for front_structure in front_structures {
+        for &part in paint_parts {
+            let Some(overlap) = rect_intersection(part, front_structure) else {
+                continue;
+            };
+            let mut uncovered = vec![overlap];
+            for &covered in &occluded_parts {
+                uncovered = uncovered
+                    .into_iter()
+                    .flat_map(|rect| rect_difference_parts(rect, covered))
+                    .collect();
+            }
+            occluded_parts.extend(uncovered);
+        }
+    }
+    occluded_parts
+}
+
 /// Canonical Carbon Window Manager WindowPositionMethod values.
 /// Universal Interfaces <MacWindows.h>.
 pub const WINDOW_CENTER_ON_MAIN_SCREEN: u16 = 1;
