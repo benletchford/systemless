@@ -5506,7 +5506,7 @@ pub(crate) fn ppc_copy_bits_boolean_pixel(
 /// visRgn ∩ clipRgn of the current port when `dst_bits` is that port's
 /// pixel image: the same baseAddr and bounds.topLeft (QuickDraw BitMaps.a,
 /// CopyBits). Other destinations are only clipped to their bounds and mask.
-fn ppc_copy_bits_current_port_clip(
+pub(super) fn ppc_copy_bits_current_port_clip(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     current_gworld: u32,

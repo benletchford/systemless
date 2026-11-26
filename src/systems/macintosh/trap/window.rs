@@ -654,8 +654,7 @@ impl super::TrapDispatcher {
         a: (i16, i16, i16, i16),
         b: (i16, i16, i16, i16),
     ) -> Option<(i16, i16, i16, i16)> {
-        let rect = (a.0.max(b.0), a.1.max(b.1), a.2.min(b.2), a.3.min(b.3));
-        (!Self::rect_is_empty(rect)).then_some(rect)
+        crate::window_manager::rect_intersection(a, b)
     }
 
     fn region_handle_rect_with_min_size(
@@ -703,18 +702,7 @@ impl super::TrapDispatcher {
     }
 
     pub(super) fn rect_difference_parts(src: WindowRect, cut: WindowRect) -> Vec<WindowRect> {
-        let Some(intersection) = Self::rect_intersection(src, cut) else {
-            return vec![src];
-        };
-        [
-            (src.0, src.1, intersection.0, src.3),
-            (intersection.2, src.1, src.2, src.3),
-            (intersection.0, src.1, intersection.2, intersection.1),
-            (intersection.0, intersection.3, intersection.2, src.3),
-        ]
-        .into_iter()
-        .filter(|rect| !Self::rect_is_empty(*rect))
-        .collect()
+        crate::window_manager::rect_difference_parts(src, cut)
     }
 
     fn repaint_resize_exposure(

@@ -5908,29 +5908,14 @@ impl super::TrapDispatcher {
         window_ptr: u32,
         paint_parts: &[(i16, i16, i16, i16)],
     ) -> Vec<(i16, i16, i16, i16)> {
-        let mut occluded_parts = Vec::new();
-        for front_window in self.window_list.windows().into_iter().take_while(|&w| w != window_ptr) {
-            if !self.window_visible(bus, front_window) {
-                continue;
-            }
-            let Some(front_structure) = self.window_structure_rect(bus, front_window) else {
-                continue;
-            };
-            for &frame in paint_parts {
-                let Some(overlap) = Self::rect_intersection(frame, front_structure) else {
-                    continue;
-                };
-                let mut uncovered = vec![overlap];
-                for &covered in &occluded_parts {
-                    uncovered = uncovered
-                        .into_iter()
-                        .flat_map(|rect| Self::rect_difference_parts(rect, covered))
-                        .collect();
-                }
-                occluded_parts.extend(uncovered);
-            }
-        }
-        occluded_parts
+        let fronts = self
+            .window_list
+            .windows()
+            .into_iter()
+            .take_while(|&w| w != window_ptr)
+            .filter(|&w| self.window_visible(bus, w))
+            .filter_map(|w| self.window_structure_rect(bus, w));
+        crate::window_manager::occluded_paint_rects(paint_parts, fronts)
     }
 
     /// Draw the window frame/border for a given procID.
