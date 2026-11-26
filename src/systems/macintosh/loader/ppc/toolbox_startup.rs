@@ -125,7 +125,9 @@ pub struct PpcToolboxStartupState {
     pub clut_reserved: [bool; 256],
     pub(crate) clut_protected_by_device: HashMap<u32, [bool; 256]>,
     pub(crate) clut_reserved_by_device: HashMap<u32, [bool; 256]>,
-    pub quickdraw_pen_pattern: [u8; 8],
+    /// The PixPat each colour port's PenPat installed, by port
+    /// (`ppc_install_port_pen_pattern`).
+    pub(crate) quickdraw_pen_pixpats: HashMap<u32, u32>,
     /// Current Color QuickDraw background pattern. A set bit selects the
     /// foreground color and a clear bit selects the background color, as in
     /// the classic `Pattern` record used by BackPat.
@@ -247,7 +249,7 @@ impl Default for PpcToolboxStartupState {
             clut_reserved: [false; 256],
             clut_protected_by_device: HashMap::new(),
             clut_reserved_by_device: HashMap::new(),
-            quickdraw_pen_pattern: [0xff; 8],
+            quickdraw_pen_pixpats: HashMap::new(),
             quickdraw_back_pattern: [0x00; 8],
             ae_interaction_allowed: 1,
             stdc_signal_state: PpcStdSignalState::default(),

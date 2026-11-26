@@ -353,7 +353,6 @@ pub(super) fn dispatch_quickdraw_import(
                     } else {
                         *quickdraw_fore_color = color;
                         quickdraw_fore_indices.remove(&current_gworld);
-                        toolbox_startup.quickdraw_pen_pattern = [0xff; 8];
                         // Retire the selected PixPat without disposing a
                         // caller-owned handle; the solid foreground now paints.
                         let _ = memory.write_u32_be(current_gworld + 58, 0);
@@ -970,6 +969,7 @@ pub(super) fn dispatch_quickdraw_import(
             ) {
                 pict::recording_push_rect(commands, 0x0031, rect);
             } else if !ppc_port_pen_hidden(memory, current_gworld) {
+                let pattern = ppc_port_pen_pattern(memory, current_gworld);
                 let _ = ppc_paint_rect(
                     cpu,
                     memory,
@@ -978,7 +978,7 @@ pub(super) fn dispatch_quickdraw_import(
                     *quickdraw_fore_color,
                     quickdraw_fore_indices.get(&current_gworld).copied(),
                     *quickdraw_back_color,
-                    &toolbox_startup.quickdraw_pen_pattern,
+                    &pattern,
                 );
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -1816,7 +1816,6 @@ pub(super) fn dispatch_quickdraw_import(
         }
         PpcImportDispatcherTarget::PenNormal => {
             ppc_set_pen_normal(memory, current_gworld);
-            toolbox_startup.quickdraw_pen_pattern = [0xff; 8];
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::PenPixPat => {
@@ -1828,18 +1827,21 @@ pub(super) fn dispatch_quickdraw_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetPenState => {
-            ppc_get_pen_state(
-                memory,
-                current_gworld,
-                cpu.gpr[3],
-                toolbox_startup.quickdraw_pen_pattern,
-            );
+            ppc_get_pen_state(memory, current_gworld, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SetPenState => {
             if let Some(pen) = ppc_set_pen_state(memory, current_gworld, cpu.gpr[3]) {
                 (*quickdraw_pen_h, *quickdraw_pen_v) = pen.location;
-                toolbox_startup.quickdraw_pen_pattern = pen.pattern;
+                ppc_install_port_pen_pattern(
+                    memory,
+                    process_memory_manager,
+                    heap_cursor,
+                    last_mem_error,
+                    &mut toolbox_startup.quickdraw_pen_pixpats,
+                    current_gworld,
+                    pen.pattern,
+                );
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -3334,18 +3336,17 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
                 // Imaging With QuickDraw (1994), pp. 3-38--3-40: PenPat
                 // installs the 8-by-8 bit pattern used by Paint and Frame
                 // shape operations. A set bit selects the foreground color;
-                // a clear bit selects the background color.
-                toolbox_startup.quickdraw_pen_pattern = pattern;
-                if memory
-                    .read_u16_be(current_gworld.wrapping_add(6))
-                    .is_some_and(|v| v & 0xc000 == 0xc000)
-                {
-                    let _ = memory.write_u32_be(current_gworld.wrapping_add(58), 0);
-                } else if current_gworld != 0 {
-                    // A basic GrafPort holds pnPat itself at +58, which
-                    // GetPenState reads back.
-                    let _ = memory.write_bytes(current_gworld.wrapping_add(58), &pattern);
-                }
+                // a clear bit selects the background color. The pattern
+                // belongs to the current port.
+                ppc_install_port_pen_pattern(
+                    memory,
+                    process_memory_manager,
+                    heap_cursor,
+                    last_mem_error,
+                    &mut toolbox_startup.quickdraw_pen_pixpats,
+                    current_gworld,
+                    pattern,
+                );
             }
             PpcImportAction::ReturnPreserve
         }

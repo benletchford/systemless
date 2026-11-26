@@ -1515,6 +1515,8 @@ fn hle_import_runner_draws_quickdraw_primitives_into_8bpp_current_gworld() {
     loaded
         .current_gworld
         .with_mut(|current_gworld| *current_gworld = port);
+    // NewGWorld makes a colour port (version bits at +6).
+    loaded.memory.write_u16_be(port + 6, 0xc000).unwrap();
     loaded
         .memory
         .write_u16_be(port + PPC_CGRAF_PORT_PN_SIZE_OFFSET, 1)
@@ -1701,6 +1703,8 @@ fn hle_import_runner_draws_representative_quickdraw_primitives_into_2bpp_gworld(
     loaded
         .current_gworld
         .with_mut(|current_gworld| *current_gworld = port);
+    // NewGWorld makes a colour port (version bits at +6).
+    loaded.memory.write_u16_be(port + 6, 0xc000).unwrap();
     loaded
         .memory
         .write_u16_be(port + PPC_CGRAF_PORT_PN_SIZE_OFFSET, 1)
@@ -1891,7 +1895,6 @@ fn color_port_pen_state_fixture() -> (PpcLoadedApp, u32, u32, u32) {
 #[test]
 fn get_pen_state_reads_pat1_data_from_a_color_ports_pixpat() {
     let (mut loaded, port, state_ptr, handle) = color_port_pen_state_fixture();
-    loaded.toolbox_startup.quickdraw_pen_pattern = [0x77; 8];
     loaded.cpu.gpr[3] = state_ptr;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPenState);
     assert_eq!(
@@ -1902,21 +1905,20 @@ fn get_pen_state_reads_pat1_data_from_a_color_ports_pixpat() {
 }
 
 #[test]
-fn get_pen_state_reads_the_bit_pattern_when_a_color_port_has_no_pixpat() {
+fn get_pen_state_reads_black_when_a_color_port_has_no_pixpat() {
     let (mut loaded, port, state_ptr, _) = color_port_pen_state_fixture();
     loaded.memory.write_u32_be(port + 58, 0).unwrap();
-    loaded.toolbox_startup.quickdraw_pen_pattern = [0x77; 8];
     loaded.cpu.gpr[3] = state_ptr;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPenState);
     assert_eq!(
         ppc_memory_read_bytes(&mut loaded.memory, state_ptr + 10, 8).unwrap(),
-        [0x77; 8]
+        [0xff; 8]
     );
 }
 
 #[test]
 fn set_pen_state_on_a_color_port_keeps_handle_fields_and_restores_the_pen() {
-    let (mut loaded, port, state_ptr, _) = color_port_pen_state_fixture();
+    let (mut loaded, port, state_ptr, caller_handle) = color_port_pen_state_fixture();
     let fill_handle = loaded.memory.read_u32_be(port + 62).unwrap();
     let pn_vis = loaded.memory.read_u16_be(port + 66).unwrap();
     loaded
@@ -1934,14 +1936,21 @@ fn set_pen_state_on_a_color_port_keeps_handle_fields_and_restores_the_pen() {
         [0, 0x1e, 0, 0x28, 0, 4, 0, 5, 0, 9]
     );
     // Same result as PenPat: no pattern bytes land in the handle fields, and
-    // the PixPat gives way to the restored bit pattern.
-    assert_eq!(loaded.memory.read_u32_be(port + 58), Some(0));
-    assert_eq!(loaded.memory.read_u32_be(port + 62), Some(fill_handle));
-    assert_eq!(loaded.memory.read_u16_be(port + 66), Some(pn_vis));
+    // the restored bit pattern gets a PixPat of its own in place of the
+    // caller's, whose pattern is untouched.
+    let installed = loaded.memory.read_u32_be(port + 58).unwrap();
+    assert!(installed != 0 && installed != caller_handle);
     assert_eq!(
-        loaded.toolbox_startup.quickdraw_pen_pattern,
+        ppc_port_pen_pattern(&mut loaded.memory, port),
         [1, 2, 3, 4, 5, 6, 7, 8]
     );
+    let caller_record = loaded.memory.read_u32_be(caller_handle).unwrap();
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, caller_record + 20, 8),
+        Some(vec![0x33; 8])
+    );
+    assert_eq!(loaded.memory.read_u32_be(port + 62), Some(fill_handle));
+    assert_eq!(loaded.memory.read_u16_be(port + 66), Some(pn_vis));
     // pnLoc is vertical first; LineTo and GetPen read the dispatcher's copy.
     assert_eq!(
         (loaded.quickdraw_pen_h, loaded.quickdraw_pen_v),
@@ -7723,7 +7732,10 @@ fn paintrect_uses_color_pen_pattern_clipping_modes_and_resets() {
                 ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), 17);
             }
         }
-        assert_eq!(loaded.toolbox_startup.quickdraw_pen_pattern, [0xff; 8]);
+        assert_eq!(
+            ppc_port_pen_pattern(&mut loaded.memory, PPC_MAIN_GWORLD),
+            [0xff; 8]
+        );
         loaded.cpu.gpr[3] = scratch;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::PenPixPat);
         loaded.cpu.gpr[3] = rect;
@@ -7772,7 +7784,10 @@ fn paintrect_uses_color_pen_pattern_clipping_modes_and_resets() {
                 PpcQuickDrawCompatibilityOperation::PenPat,
             ),
         );
-        assert_eq!(loaded.memory.read_u32_be(PPC_MAIN_GWORLD + 58), Some(0));
+        assert_eq!(
+            ppc_port_pen_pattern(&mut loaded.memory, PPC_MAIN_GWORLD),
+            [0; 8]
+        );
         loaded.cpu.gpr[3] = rect;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::PaintRect);
         assert_eq!(
@@ -8106,7 +8121,14 @@ fn eraserect_uses_live_color_background_with_clipping_and_port_phase() {
         }
         loaded.cpu.gpr[3] = 10;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::PenMode);
-        loaded.toolbox_startup.quickdraw_pen_pattern = [0x33; 8];
+        loaded.memory.add_region(scratch + 0x280, vec![0x33; 8]);
+        loaded.cpu.gpr[3] = scratch + 0x280;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::PenPat,
+            ),
+        );
         for (left, right) in [(-1, 1), (1, 3)] {
             ppc_write_rect(&mut loaded.memory, scratch + 0x200, -1, left, 3, right).unwrap();
             loaded.cpu.gpr[3] = scratch + 0x200;
@@ -8132,7 +8154,10 @@ fn eraserect_uses_live_color_background_with_clipping_and_port_phase() {
                 );
             }
         }
-        assert_eq!(loaded.toolbox_startup.quickdraw_pen_pattern, [0x33; 8]);
+        assert_eq!(
+            ppc_port_pen_pattern(&mut loaded.memory, PPC_MAIN_GWORLD),
+            [0x33; 8]
+        );
         assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_GWORLD + 56), Some(10));
     }
 }
@@ -8608,4 +8633,161 @@ fn make_itable_after_restoring_faded_screen_ctab_matches_logical_colors() {
     );
     // The hardware stays faded until the application fades it back in.
     assert!(loaded.screen_clut.iter().all(|entry| *entry == [0; 3]));
+}
+
+fn run_pen_pat(loaded: &mut PpcLoadedApp, pattern_ptr: u32) {
+    loaded.cpu.gpr[3] = pattern_ptr;
+    run_test_import(
+        loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::PenPat,
+        ),
+    );
+}
+
+#[test]
+fn pen_pattern_belongs_to_the_port_that_set_it() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PaintRect")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x5000;
+    loaded.memory.add_region(scratch, vec![0; 0x400]);
+    let clear = scratch; // an all-zero pattern paints the background
+    let rect = scratch + 0x10;
+    loaded.memory.write_u16_be(rect + 4, 2).unwrap();
+    loaded.memory.write_u16_be(rect + 6, 2).unwrap();
+    let state = scratch + 0x20;
+    // A second colour port with no pen PixPat yet.
+    let other = scratch + 0x100;
+    loaded.memory.write_u16_be(other + 6, 0xc000).unwrap();
+    let main = PPC_MAIN_GWORLD;
+    assert_eq!(
+        loaded.memory.read_u16_be(main + 6).map(|v| v & 0xc000),
+        Some(0xc000)
+    );
+    let front = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, main)
+        .unwrap()
+        .front_buffer;
+
+    // PenPat in the other port...
+    loaded.cpu.gpr[3] = other;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPort);
+    run_pen_pat(&mut loaded, clear);
+    assert_eq!(ppc_port_pen_pattern(&mut loaded.memory, other), [0; 8]);
+    // ...leaves the main port's pen black, so PaintRect there paints black.
+    loaded.cpu.gpr[3] = main;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPort);
+    loaded.cpu.gpr[3] = state;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPenState);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, state + 10, 8),
+        Some(vec![0xff; 8])
+    );
+    loaded.cpu.gpr[3] = rect;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PaintRect);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (1, 1)),
+        Some(255)
+    );
+    // The other port still has its own pattern when selected again.
+    loaded.cpu.gpr[3] = other;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPort);
+    loaded.cpu.gpr[3] = state;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPenState);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, state + 10, 8),
+        Some(vec![0; 8])
+    );
+}
+
+#[test]
+fn pen_patterns_reuse_the_ports_own_pixpat_and_leave_a_callers_alone() {
+    let (mut loaded, port, state_ptr, caller) = color_port_pen_state_fixture();
+    let scratch = PPC_DATA_BASE + 0x5000;
+    loaded.memory.add_region(scratch, vec![0x11; 8]);
+    loaded.memory.add_region(scratch + 8, vec![0x22; 8]);
+    run_pen_pat(&mut loaded, scratch);
+    let own = loaded.memory.read_u32_be(port + 58).unwrap();
+    assert!(own != 0 && own != caller);
+    assert_eq!(ppc_port_pen_pattern(&mut loaded.memory, port), [0x11; 8]);
+    // Later patterns, from PenPat or SetPenState, rewrite the same PixPat.
+    run_pen_pat(&mut loaded, scratch + 8);
+    assert_eq!(loaded.memory.read_u32_be(port + 58), Some(own));
+    loaded
+        .memory
+        .write_bytes(
+            state_ptr,
+            &[0, 1, 0, 2, 0, 1, 0, 1, 0, 8, 9, 9, 9, 9, 9, 9, 9, 9],
+        )
+        .unwrap();
+    loaded.cpu.gpr[3] = state_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPenState);
+    assert_eq!(loaded.memory.read_u32_be(port + 58), Some(own));
+    assert_eq!(ppc_port_pen_pattern(&mut loaded.memory, port), [9; 8]);
+    // After a caller's PixPat, PenPat goes back to the port's own one and
+    // leaves the caller's pattern as it was.
+    loaded.cpu.gpr[3] = caller;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PenPixPat);
+    run_pen_pat(&mut loaded, scratch);
+    assert_eq!(loaded.memory.read_u32_be(port + 58), Some(own));
+    let caller_record = loaded.memory.read_u32_be(caller).unwrap();
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, caller_record + 20, 8),
+        Some(vec![0x33; 8])
+    );
+}
+
+#[test]
+fn paint_rect_in_a_basic_port_uses_that_ports_pen_pattern() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PaintRect")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let port = scratch;
+    let pixels = scratch + 0x200;
+    let rect = scratch + 0x100;
+    let pattern = scratch + 0x120;
+    loaded.memory.add_region(scratch, vec![0; 0x400]);
+    loaded.gworlds.push(PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port,
+        pixmap_handle: 0,
+        pixmap: 0,
+        base_addr: pixels,
+        gdevice: PPC_MAIN_GDEVICE,
+        width: 16,
+        height: 16,
+        depth: 8,
+        row_bytes: 16,
+        pixels_locked: false,
+        pixels_no_purge: false,
+        private_gdevice: false,
+    });
+    // A basic GrafPort (no colour version bits) with a 1x1 pen.
+    loaded
+        .memory
+        .write_u16_be(port + PPC_CGRAF_PORT_PN_SIZE_OFFSET, 1)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(port + PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2, 1)
+        .unwrap();
+    loaded
+        .memory
+        .write_bytes(pattern, &[0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa])
+        .unwrap();
+    loaded.cpu.gpr[3] = port;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPort);
+    run_pen_pat(&mut loaded, pattern);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, port + 58, 8),
+        Some(vec![0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa])
+    );
+    loaded.quickdraw_fore_color = PPC_RGB_BLACK;
+    loaded.quickdraw_back_color = PPC_RGB_WHITE;
+    ppc_write_rect(&mut loaded.memory, rect, 0, 0, 2, 2).unwrap();
+    loaded.cpu.gpr[3] = rect;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PaintRect);
+    let at = |loaded: &mut PpcLoadedApp, x: u32, y: u32| loaded.memory.read_u8(pixels + y * 16 + x);
+    // 0x55 on row 0 sets bits 1, 3, 5, 7: pixel 1 is ink, pixel 0 background.
+    let (ink, paper) = (at(&mut loaded, 1, 0), at(&mut loaded, 0, 0));
+    assert_ne!(ink, paper);
+    assert_eq!(at(&mut loaded, 0, 1), ink);
+    assert_eq!(at(&mut loaded, 1, 1), paper);
 }

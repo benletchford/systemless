@@ -76,7 +76,6 @@ pub(crate) fn ppc_set_pen_normal(memory: &mut PpcSectionMem, current_gworld: u32
 const PPC_PEN_STATE_HEADER_SIZE: u32 = 10;
 const PPC_PEN_STATE_SIZE: u32 = PPC_PEN_STATE_HEADER_SIZE + 8;
 const PPC_PORT_PN_PAT_OFFSET: u32 = PPC_CGRAF_PORT_PN_MODE_OFFSET + 2;
-const PPC_PIXPAT_PAT1_DATA_OFFSET: u32 = 20;
 
 fn ppc_port_is_color(memory: &mut PpcSectionMem, port: u32) -> bool {
     memory
@@ -100,7 +99,7 @@ fn ppc_color_port_pen_pattern(
         .filter(|record| *record != 0)
         .and_then(|record| {
             memory.read_bytes_into(
-                record.wrapping_add(PPC_PIXPAT_PAT1_DATA_OFFSET),
+                record.wrapping_add(crate::quickdraw::PIXPAT_PAT1_DATA_OFFSET),
                 &mut pattern,
             )
         });
@@ -111,12 +110,89 @@ fn ppc_color_port_pen_pattern(
     }
 }
 
-pub(crate) fn ppc_get_pen_state(
+/// The bit pattern Paint operations use in `port`: a basic GrafPort's
+/// pnPat, or the pattern of a colour port's pnPixPat, which PenPat installs
+/// there (black when the port has none). Imaging With QuickDraw (1994),
+/// p. 3-47.
+pub(crate) fn ppc_port_pen_pattern(memory: &mut PpcSectionMem, port: u32) -> [u8; 8] {
+    if port == 0 {
+        return [0xff; 8];
+    }
+    if ppc_port_is_color(memory, port) {
+        return ppc_color_port_pen_pattern(memory, port, [0xff; 8]);
+    }
+    let mut pattern = [0u8; 8];
+    match memory.read_bytes_into(port.wrapping_add(PPC_PORT_PN_PAT_OFFSET), &mut pattern) {
+        Some(_) => pattern,
+        None => [0xff; 8],
+    }
+}
+
+/// Install `pattern` as `port`'s pen pattern, as PenPat does: a basic
+/// GrafPort holds it in pnPat, and a colour port gets a PixPat handle for it
+/// in pnPixPat (Imaging With QuickDraw (1994), pp. 3-47 and 4-23). The
+/// PixPat is Systemless's own, one per port (`owned`), and later patterns in
+/// that port reuse it. A caller's handle that PenPixPat installed is
+/// replaced, not written to. Without memory for a PixPat the port is left
+/// with none, which paints black.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ppc_install_port_pen_pattern(
     memory: &mut PpcSectionMem,
-    current_gworld: u32,
-    state_ptr: u32,
-    bit_pattern: [u8; 8],
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    owned: &mut HashMap<u32, u32>,
+    port: u32,
+    pattern: [u8; 8],
 ) {
+    if port == 0 {
+        return;
+    }
+    let field = port.wrapping_add(PPC_PORT_PN_PAT_OFFSET);
+    if !ppc_port_is_color(memory, port) {
+        let _ = memory.write_bytes(field, &pattern);
+        return;
+    }
+    let reusable = owned
+        .get(&port)
+        .copied()
+        .filter(|&handle| memory.read_u32_be(handle).is_some_and(|record| record != 0));
+    let handle = if let Some(handle) = reusable {
+        handle
+    } else {
+        let handle = process_memory_manager.new_native_handle(
+            memory,
+            crate::quickdraw::PIXPAT_RECORD_SIZE,
+            true,
+        );
+        ppc_apply_process_native_allocator(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+        );
+        if handle != 0 {
+            owned.insert(port, handle);
+        }
+        handle
+    };
+    let record = match handle {
+        0 => 0,
+        handle => memory.read_u32_be(handle).unwrap_or(0),
+    };
+    if record == 0 {
+        let _ = memory.write_u32_be(field, 0);
+        return;
+    }
+    let _ = memory.write_u16_be(record, 0);
+    let _ = memory.write_bytes(
+        record.wrapping_add(crate::quickdraw::PIXPAT_PAT1_DATA_OFFSET),
+        &pattern,
+    );
+    let _ = memory.write_u32_be(field, handle);
+}
+
+pub(crate) fn ppc_get_pen_state(memory: &mut PpcSectionMem, current_gworld: u32, state_ptr: u32) {
     let pen = current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_LOC_OFFSET);
     let size = if ppc_port_is_color(memory, current_gworld) {
         PPC_PEN_STATE_HEADER_SIZE
@@ -127,11 +203,7 @@ pub(crate) fn ppc_get_pen_state(
         return;
     };
     if size == PPC_PEN_STATE_HEADER_SIZE {
-        bytes.extend_from_slice(&ppc_color_port_pen_pattern(
-            memory,
-            current_gworld,
-            bit_pattern,
-        ));
+        bytes.extend_from_slice(&ppc_port_pen_pattern(memory, current_gworld));
     }
     if ppc_memory_can_write_bytes(memory, state_ptr, PPC_PEN_STATE_SIZE) {
         let _ = memory.write_bytes(state_ptr, &bytes);
@@ -158,9 +230,9 @@ pub(crate) fn ppc_set_pen_state(
     // Imaging With QuickDraw (1994), pp. 3-37 and 3-43--3-44: PenState is
     // pnLoc, pnSize, pnMode and an 8-byte pnPat, 18 bytes in all. Only a basic
     // GrafPort stores it contiguously. A colour port has the pnPixPat and
-    // fillPixPat handles where pnPat would be, so its pattern goes through the
-    // same path as PenPat: the fill pattern is untouched, and the selected
-    // PixPat is retired without disposing a caller-owned handle.
+    // fillPixPat handles where pnPat would be, so the caller installs its
+    // pattern as PenPat does (`ppc_install_port_pen_pattern`), leaving the
+    // fill pattern untouched.
     let color_port = ppc_port_is_color(memory, current_gworld);
     let size = if color_port {
         PPC_PEN_STATE_HEADER_SIZE
@@ -171,9 +243,6 @@ pub(crate) fn ppc_set_pen_state(
         return None;
     }
     memory.write_bytes(pen, &bytes[..size as usize])?;
-    if color_port {
-        memory.write_u32_be(current_gworld.wrapping_add(PPC_PORT_PN_PAT_OFFSET), 0)?;
-    }
     let mut pattern = [0u8; 8];
     pattern.copy_from_slice(&bytes[PPC_PEN_STATE_HEADER_SIZE as usize..]);
     Some(PpcRestoredPen {

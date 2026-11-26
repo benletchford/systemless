@@ -1682,7 +1682,10 @@ fn fill_rect_draws_its_pattern_with_the_ports_explicit_indices() {
         .quickdraw_back_indices
         .insert(PPC_MAIN_GWORLD, 42);
     // The pen pattern stays solid: FillRect must not consult it.
-    assert_eq!(loaded.toolbox_startup.quickdraw_pen_pattern, [0xff; 8]);
+    assert_eq!(
+        ppc_port_pen_pattern(&mut loaded.memory, PPC_MAIN_GWORLD),
+        [0xff; 8]
+    );
     let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
     assert_eq!(front.depth, 8);
 
