@@ -187,7 +187,11 @@ fn source_fingerprint(game_path: &Path, current_exe: &Path) -> io::Result<u64> {
     }
     hash.write(current_exe.as_os_str().as_bytes());
     hash.write(env!("CARGO_PKG_VERSION").as_bytes());
-    for key in ["SYSTEMLESS_LOAD_EXECUTABLE", "SYSTEMLESS_PREFER_POWERPC"] {
+    for key in [
+        "SYSTEMLESS_LOAD_EXECUTABLE",
+        "SYSTEMLESS_PREFER_POWERPC",
+        "SYSTEMLESS_INSTALL_FOLDER",
+    ] {
         hash.write(key.as_bytes());
         if let Some(value) = std::env::var_os(key) {
             hash.write(value.as_bytes());

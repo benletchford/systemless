@@ -358,6 +358,12 @@ pub fn load_game_from_path(
     path: &std::path::Path,
 ) -> Result<LoadedApp, String> {
     runner.clear_executable_candidates();
+    if let Ok(folder) = std::env::var("SYSTEMLESS_INSTALL_FOLDER") {
+        let image = std::rc::Rc::new(read_host_file(path)?);
+        let (contents, shared) = extract_shared_disk_image(image)?
+            .ok_or_else(|| "--install-folder requires an HFS disk image".to_owned())?;
+        return launch_installed_disc_folder(runner, contents, shared, &folder);
+    }
     // A directory is an extracted host tree: load the whole folder, taking
     // resource forks from macOS extended attributes (or sidecars) and decoding
     // any MacBinary members.
@@ -964,6 +970,81 @@ fn load_shared_disk_image(
         runner,
         payload_from_disk_image_with_shared_data(contents, shared, 1)?,
     )
+}
+
+/// Copy just the selected directory to the startup volume. Mount the original
+/// media as data so helpers elsewhere on the CD never enter executable selection.
+fn launch_installed_disc_folder(
+    runner: &mut FixtureRunner,
+    image: crate::disk_image::DiskImageContents,
+    shared_data: Vec<Option<SharedImageRange>>,
+    requested: &str,
+) -> Result<LoadedApp, String> {
+    use crate::trap::dispatch::TrapDispatcher;
+    let normalize = TrapDispatcher::normalize_vfs_path;
+    let requested = normalize(requested);
+    let folder = image
+        .dirs
+        .iter()
+        .map(|dir| normalize(dir))
+        .find(|dir| dir.eq_ignore_ascii_case(&requested))
+        .ok_or_else(|| format!("No directory {requested:?} in {:?}", image.volume_name))?;
+    let (volume, _) = folder
+        .split_once('/')
+        .ok_or("Select a directory inside the disc")?;
+    if !volume.eq_ignore_ascii_case(&image.volume_name)
+        || folder.split('/').any(|part| part == "..")
+    {
+        return Err(format!("Invalid installation folder {folder:?}"));
+    }
+    let root = "Installed Applications";
+    if image.volume_name.eq_ignore_ascii_case(root)
+        || runner.dispatcher().vfs_volume_by_name(root).is_some()
+    {
+        return Err(format!(
+            "A mounted volume already uses the installation directory name {root:?}"
+        ));
+    }
+    let destination = format!("{root}/{}", folder.rsplit('/').next().unwrap());
+    let installed_path = |name: &str| {
+        let path = normalize(name);
+        (vfs_path_matches_remove(&path, &folder) && !path.split('/').any(|p| p == ".."))
+            .then(|| format!("{destination}{}", &path[folder.len()..]))
+    };
+    let dirs = image
+        .dirs
+        .iter()
+        .filter_map(|dir| installed_path(dir))
+        .collect();
+    let files = image
+        .files
+        .iter()
+        .zip(&shared_data)
+        .filter_map(|(file, shared)| {
+            let name = installed_path(&file.path)?;
+            Some(PayloadFile {
+                name,
+                data: shared.clone().map_or_else(
+                    || ProcessForkBytes::from(file.data.as_slice()),
+                    ProcessForkBytes::from,
+                ),
+                rsrc: file.rsrc.clone(),
+                file_type: file.file_type,
+                creator: file.creator,
+                finder_flags: file.finder_flags,
+                executable_priority: 1,
+            })
+        })
+        .collect();
+    let payload = Payload {
+        dirs,
+        files,
+        volumes: Vec::new(),
+        installer_roots: Vec::new(),
+        skipped_disk_image_errors: Vec::new(),
+    };
+    mount_locked_volume_contents_with_shared_data(runner, image, shared_data)?;
+    load_disk_image_payload(runner, payload)
 }
 
 /// Parse `image`, leaving each data fork held whole in one extent unread and
@@ -8759,6 +8840,67 @@ mod tests {
             .iter()
             .map(|volume| (volume.name.clone(), volume.ref_num, volume.attributes))
             .collect()
+    }
+
+    #[test]
+    fn installed_disc_folder_is_writable_and_only_its_application_is_selected() {
+        use crate::disk_image::{DiskImageContents, DiskImageFile, DiskImageVolumeInfo};
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let file = |path: &str| DiskImageFile {
+            path: path.to_owned(),
+            data: b"data fork".to_vec(),
+            rsrc: rsrc.clone(),
+            file_type: *b"APPL",
+            creator: *b"TEST",
+            finder_flags: 0x0400,
+        };
+        let image = DiskImageContents {
+            volume_name: "Disc".into(),
+            volume_info: DiskImageVolumeInfo::default(),
+            dirs: [
+                "Disc",
+                "Disc/Install",
+                "Disc/Install/Empty",
+                "Disc/Install Extras",
+            ]
+            .map(String::from)
+            .to_vec(),
+            files: vec![
+                file("Disc/Install/Game"),
+                file("Disc/Install Extras/Preview"),
+            ],
+        };
+        let mut runner = new_runner();
+        let mapped = SharedImageRange::new(std::rc::Rc::new(b"data fork".to_vec()), 0, 9).unwrap();
+        launch_installed_disc_folder(&mut runner, image, vec![Some(mapped), None], "disc/install")
+            .unwrap();
+        let installed = "Installed Applications/Install/Game";
+        assert_eq!(runner.executable_candidates(), [installed]);
+        let dispatcher = runner.dispatcher();
+        assert_eq!(dispatcher.launched_app_path(), Some(installed));
+        assert!(!dispatcher.vfs_path_is_read_only(installed));
+        assert!(dispatcher.vfs_path_is_read_only("Disc/Install/Game"));
+        assert!(dispatcher.vfs_path_is_read_only("Disc/Install Extras/Preview"));
+        for path in [installed, "Disc/Install/Game"] {
+            assert_eq!(dispatcher.vfs.get(path), Some(b"data fork".as_slice()));
+            assert_eq!(dispatcher.vfs_rsrc.get(path), Some(rsrc.as_slice()));
+            let metadata = dispatcher.vfs_metadata.get(path).unwrap();
+            assert_eq!(metadata.creator, u32::from_be_bytes(*b"TEST"));
+            assert_eq!(metadata.finder_flags, 0x0400);
+        }
+        assert!(dispatcher
+            .vfs_directories
+            .iter()
+            .any(|dir| dir.path == "Installed Applications/Install/Empty"));
+        runner
+            .dispatcher_mut()
+            .vfs
+            .with_entry_mut(installed, |data| data[0] = b'X')
+            .unwrap();
+        assert_eq!(
+            runner.dispatcher().vfs.get("Disc/Install/Game"),
+            Some(b"data fork".as_slice())
+        );
     }
 
     #[test]

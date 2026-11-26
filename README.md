@@ -401,6 +401,13 @@ writable startup disk, `MacintoshHD`, and a disk image as its own volume.
 Executables on mounted volumes are never launched, and a mounted volume may
 not share a name with the game's media or another mounted volume.
 
+For a CD title that expects its application on a hard disk, pass the directory
+to copy with its volume name, for example
+`systemless --install-folder Titanic1/INSTALL_MAC TITANIC1.iso`.
+The runner copies that subtree to the guest startup disk under
+`Installed Applications`, preserving both forks and Finder metadata. It selects
+an application inside the copy and mounts the original CD as a locked volume.
+
 Systemless may keep a disk image passed as the game or with `--mount`
 memory-mapped until it exits, so don't modify or replace the image file while
 it's running. On Windows, an attempt to overwrite it fails with a "file is in
