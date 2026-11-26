@@ -251,7 +251,14 @@ impl PresentationSlot {
     /// setting.
     pub(crate) fn set_guest_stores(&self, guest: bool) -> bool {
         self.as_mut()
-            .map(|mut p| std::mem::replace(&mut p.guest_stores, guest))
+            .map(|mut p| {
+                if !guest {
+                    // A Toolbox call or the end of a slice ends the guest's
+                    // stores, as an A-line trap ends 68K code's.
+                    p.finish_cpu_recolor();
+                }
+                std::mem::replace(&mut p.guest_stores, guest)
+            })
             .unwrap_or(false)
     }
     pub fn as_mut(&self) -> Option<std::cell::RefMut<'_, Presentation>> {
@@ -385,6 +392,27 @@ impl PresentationSlot {
                 // retained cell.
                 if !p.may_have_offscreen_detail(address, end) {
                     return;
+                }
+                if p.guest_stores {
+                    // Guest code recoloring offscreen text in place (a
+                    // pressed button drawn through the screen's base address)
+                    // rewrites each cell through one colour map. The cells'
+                    // values are the old bytes, so they are its evidence, as
+                    // the screen's guest values are for 68K code. Cells that
+                    // run damage removed before the guest reached them count
+                    // too (`keep_run_removals`).
+                    let mut cells = p.offscreen.range(address, end);
+                    let kept = p.offscreen.take_kept(address, end);
+                    if !kept.is_empty() {
+                        cells.extend(kept);
+                        cells.sort_unstable_by_key(|&(cell_address, _)| cell_address);
+                    }
+                    for (cell_address, cell) in cells {
+                        let value = bytes[(cell_address - address) as usize];
+                        p.observe_recolor_store(cell_address, cell.value, value, Some(cell));
+                    }
+                    let recoloring = p.cpu_recolor.as_ref().is_some_and(|recolor| recolor.valid);
+                    p.keep_run_removals(recoloring);
                 }
                 let removed = if p.guest_stores {
                     p.offscreen.remove_changed(address, bytes)
@@ -1279,6 +1307,19 @@ impl Presentation {
     }
 
     fn observe_cpu_recolor(&mut self, address: u32, old: u8, value: u8) {
+        let detail = self.detail(address);
+        self.observe_recolor_store(address, old, value, detail);
+    }
+
+    /// Note a guest store of `value` over `old` at `address`, whose detail
+    /// cell (if any) is `detail`.
+    fn observe_recolor_store(
+        &mut self,
+        address: u32,
+        old: u8,
+        value: u8,
+        detail: Option<Arc<DetailCell>>,
+    ) {
         if self.depth != 8 {
             return;
         }
@@ -1304,7 +1345,7 @@ impl Presentation {
         }
         recolor.map[old as usize] = value.into();
         recolor.reverse[value as usize] = old.into();
-        if let Some(detail) = self.detail(address) {
+        if let Some(detail) = detail {
             let recolor = self.cpu_recolor.as_mut().unwrap();
             // Bound temporary metadata even for a guest that rewrites a whole
             // text-filled screen without returning to the Toolbox.
@@ -1320,6 +1361,7 @@ impl Presentation {
         let Some(recolor) = self.cpu_recolor.take() else {
             return;
         };
+        self.keep_run_removals(false);
         if !recolor.valid
             || !recolor
                 .map
@@ -1401,12 +1443,30 @@ impl Presentation {
     /// being observed, so later stores to them take the plain paths again.
     /// Drawing text there again marks the page afresh and reports it (see
     /// `include_offscreen_address`).
+    /// `OffscreenDetail::keep_run_removals`, ending the observation of the
+    /// pages left holding nothing once kept cells are forgotten.
+    fn keep_run_removals(&mut self, keep: bool) {
+        let page_mask = !((1u32 << STORE_FILTER_PAGE_SHIFT) - 1);
+        let mut last_page = None;
+        for address in self.offscreen.keep_run_removals(keep) {
+            let page = address & page_mask;
+            if last_page != Some(page) {
+                last_page = Some(page);
+                self.forget_emptied_offscreen_pages(page, u64::from(page) + 1);
+            }
+        }
+    }
+
     fn forget_emptied_offscreen_pages(&mut self, address: u32, end: u64) {
         let page_bytes = 1u64 << STORE_FILTER_PAGE_SHIFT;
         let mut page = u64::from(address) & !(page_bytes - 1);
         while page < end {
             let page_end = page + page_bytes;
-            if !self.offscreen.any_in(page as u32, page_end) {
+            // A page with kept cells (`keep_run_removals`) waits for the
+            // guest stores that may restore them.
+            if !self.offscreen.any_in(page as u32, page_end)
+                && !self.offscreen.keeps_any_in(page as u32, page_end)
+            {
                 self.offscreen_pages.unmark_page(page as u32);
             }
             page = page_end;
@@ -8083,6 +8143,96 @@ mod tests {
         assert!(detail(&bus));
         memory.write_u8(page, 7).unwrap();
         assert!(!detail(&bus), "a store over offscreen detail removes it");
+    }
+
+    /// A guest address space holding one offscreen text run: a background
+    /// cell (5, ink 9 in its samples) followed by two ink cells (9, background
+    /// 5 in theirs), one per row as a label's last rows are.
+    fn offscreen_text_run() -> (MacMemoryBus, crate::memory::GuestAddressSpace, [u32; 3]) {
+        use ppc::PpcMemory;
+        let mut bus = bus();
+        let mut memory = crate::memory::GuestAddressSpace::new();
+        let base = 0x0100_0000;
+        let cells = [base, base + 0x100, base + 0x200];
+        let mut bytes = vec![0u8; 0x300];
+        bytes[0] = 5;
+        bytes[0x100] = 9;
+        bytes[0x200] = 9;
+        memory.add_region(base, bytes);
+        bus.attach_guest_address_space(memory.shared_view());
+        let mut p = bus.presentation.as_mut().unwrap();
+        p.offscreen.set_run(1);
+        for (&address, (value, indices)) in
+            cells
+                .iter()
+                .zip([(5, [5, 9, 5, 5]), (9, [9, 9, 9, 5]), (9, [9, 9, 9, 5])])
+        {
+            let cell = Arc::new(DetailCell {
+                value,
+                indices: indices.to_vec(),
+                ink: Default::default(),
+                dimmed: false,
+            });
+            p.put_detail(address, &cell);
+        }
+        p.offscreen.set_run(0);
+        drop(p);
+        (bus, memory, cells)
+    }
+
+    #[test]
+    fn guest_recolor_of_offscreen_text_keeps_cells_run_damage_removed_first() {
+        use ppc::PpcMemory;
+        let (bus, mut memory, cells) = offscreen_text_run();
+        // A pressed button's colour map, applied a byte at a time: the
+        // background 5 becomes 7, and the ink 9 is stored unchanged. The first
+        // store changes the run's only background cell, so the two ink cells
+        // left no longer show text and run damage removes them, before the
+        // guest has rewritten either.
+        memory.presentation().set_guest_stores(true);
+        memory.write_u8(cells[0], 7).unwrap();
+        assert!(bus
+            .presentation
+            .as_ref()
+            .unwrap()
+            .detail(cells[1])
+            .is_none());
+        memory.write_u8(cells[1], 9).unwrap();
+        memory.write_u8(cells[2], 9).unwrap();
+        // The next Toolbox call ends the guest's stores.
+        memory.presentation().set_guest_stores(false);
+        let p = bus.presentation.as_ref().unwrap();
+        for (address, value, indices) in [
+            (cells[0], 7, [7, 9, 7, 7]),
+            (cells[1], 9, [9, 9, 9, 7]),
+            (cells[2], 9, [9, 9, 9, 7]),
+        ] {
+            let cell = p.detail(address).unwrap_or_else(|| panic!("{address:#x}"));
+            assert_eq!((cell.value, cell.indices.as_slice()), (value, &indices[..]));
+        }
+    }
+
+    #[test]
+    fn guest_stores_that_are_not_a_recolor_still_drop_offscreen_text() {
+        use ppc::PpcMemory;
+        // A fill: the background and the ink both become 7.
+        // An overdraw that stops after its first store: the ink cells run
+        // damage removed are never rewritten, so nothing recolors them.
+        for stores in [&[7u8, 7, 7][..], &[7]] {
+            let (bus, mut memory, cells) = offscreen_text_run();
+            memory.presentation().set_guest_stores(true);
+            for (&address, &value) in cells.iter().zip(stores) {
+                memory.write_u8(address, value).unwrap();
+            }
+            memory.presentation().set_guest_stores(false);
+            let p = bus.presentation.as_ref().unwrap();
+            for address in cells {
+                assert!(p.detail(address).is_none(), "{stores:?}: {address:#x}");
+            }
+            // Nothing is left on the page, so stores there need not reach
+            // the presentation any more.
+            assert!(!p.page_may_be_observed(cells[0]), "{stores:?}");
+        }
     }
 
     #[test]

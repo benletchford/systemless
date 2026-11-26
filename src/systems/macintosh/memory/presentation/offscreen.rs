@@ -512,6 +512,9 @@ pub(super) struct OffscreenDetail {
     /// holds no cell. Most copies read and write pages that never held
     /// detail; this lets them skip the chunk map entirely.
     pages: Vec<u64>,
+    /// While set, the cells that run damage removes, by address (see
+    /// `keep_run_removals`).
+    kept: Option<BTreeMap<u32, Arc<DetailCell>>>,
 }
 
 /// What guest stores have changed of a run.
@@ -695,6 +698,9 @@ impl OffscreenDetail {
             let end = (to - base).min(CHUNK_BYTES as u32) as usize;
             for slot in first..end {
                 if chunk.runs[slot] == run && chunk.has(slot) {
+                    if let Some(kept) = self.kept.as_mut() {
+                        kept.insert(base + slot as u32, chunk.cell(slot));
+                    }
                     chunk.clear(slot);
                     removed += 1;
                 }
@@ -810,9 +816,15 @@ impl OffscreenDetail {
             let Some((from, last)) = self.run_bounds.remove(&run) else {
                 continue;
             };
-            for (_, chunk) in self.chunks.range_mut(from >> CHUNK_SHIFT..=last >> CHUNK_SHIFT) {
+            for (&key, chunk) in self
+                .chunks
+                .range_mut(from >> CHUNK_SHIFT..=last >> CHUNK_SHIFT)
+            {
                 for slot in 0..CHUNK_BYTES {
                     if chunk.runs[slot] == run && chunk.has(slot) {
+                        if let Some(kept) = self.kept.as_mut() {
+                            kept.insert((key << CHUNK_SHIFT) + slot as u32, chunk.cell(slot));
+                        }
                         chunk.clear(slot);
                         removed += 1;
                     }
@@ -821,6 +833,54 @@ impl OffscreenDetail {
         }
         self.count -= removed;
         removed
+    }
+
+    /// Start or stop keeping the cells that run damage removes. A guest
+    /// recoloring text in place changes the pixels of a run before it has
+    /// rewritten all of them, and the cells it has yet to reach must still
+    /// be found when it does. Stopping forgets what was kept, returning the
+    /// addresses it held.
+    pub(super) fn keep_run_removals(&mut self, keep: bool) -> Vec<u32> {
+        match (keep, self.kept.is_some()) {
+            (true, false) => self.kept = Some(BTreeMap::new()),
+            (false, true) => return self.kept.take().unwrap().into_keys().collect(),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// Whether a cell in `[from, to)` is kept.
+    pub(super) fn keeps_any_in(&self, from: u32, to: u64) -> bool {
+        let to = to.min(1 << 32);
+        u64::from(from) < to
+            && self
+                .kept
+                .as_ref()
+                .is_some_and(|kept| kept.range(from..=(to - 1) as u32).next().is_some())
+    }
+
+    /// Take the kept cells in `[from, to)` that no cell has replaced since.
+    pub(super) fn take_kept(&mut self, from: u32, to: u64) -> Vec<(u32, Arc<DetailCell>)> {
+        let Some(kept) = self.kept.as_mut().filter(|kept| !kept.is_empty()) else {
+            return Vec::new();
+        };
+        let to = to.min(1 << 32);
+        if u64::from(from) >= to {
+            return Vec::new();
+        }
+        let addresses: Vec<u32> = kept
+            .range(from..=(to - 1) as u32)
+            .map(|(&a, _)| a)
+            .collect();
+        let mut taken = Vec::with_capacity(addresses.len());
+        for address in addresses {
+            let cell = kept.remove(&address).unwrap();
+            let (key, slot) = split(address);
+            if !self.chunks.get(&key).is_some_and(|chunk| chunk.has(slot)) {
+                taken.push((address, cell));
+            }
+        }
+        taken
     }
 
     pub(super) fn contains(&self, address: u32) -> bool {
