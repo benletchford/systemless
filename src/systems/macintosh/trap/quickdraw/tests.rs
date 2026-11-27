@@ -13415,29 +13415,30 @@
     fn erase_and_invert_rect_leave_an_open_region_empty() {
         // Imaging With QuickDraw (1994), p. 3-87: only lines and framed
         // shapes affect an open region's outline.
-        let (mut d, mut cpu, mut bus) = setup_with_port();
-        let port = 0x181000;
-        d.current_port.with_mut(|current_port| *current_port = port);
-        d.dispatch_quickdraw(true, 0x0DA, &mut cpu, &mut bus)
-            .unwrap()
-            .unwrap();
-        let rect = bus.alloc(8);
-        for (i, v) in [10u16, 10, 30, 30].into_iter().enumerate() {
-            bus.write_word(rect + i as u32 * 2, v);
+        for trap in [0x0A3, 0x0A4] {
+            let (mut d, mut cpu, mut bus) = setup_with_port();
+            let port = 0x181000;
+            d.current_port.with_mut(|current_port| *current_port = port);
+            d.dispatch_quickdraw(true, 0x0DA, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            let rect = bus.alloc(8);
+            for (i, v) in [10u16, 10, 30, 30].into_iter().enumerate() {
+                bus.write_word(rect + i as u32 * 2, v);
+            }
+            qd_call_long(&mut d, &mut cpu, &mut bus, trap, rect);
+            let dst_ptr = bus.alloc(10);
+            let dst = bus.alloc(4);
+            make_rgn(&mut bus, dst_ptr, dst, 1, 1, 2, 2);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, dst);
+            d.dispatch_quickdraw(true, 0x0DB, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            let region = bus.read_long(dst);
+            let bbox: Vec<u16> = (0..4).map(|i| bus.read_word(region + 2 + i * 2)).collect();
+            assert_eq!(bbox, [0, 0, 0, 0], "region bounds after trap {trap:#x}");
         }
-        qd_call_long(&mut d, &mut cpu, &mut bus, 0x0A3, rect);
-        qd_call_long(&mut d, &mut cpu, &mut bus, 0x0A4, rect);
-        let dst_ptr = bus.alloc(10);
-        let dst = bus.alloc(4);
-        make_rgn(&mut bus, dst_ptr, dst, 1, 1, 2, 2);
-        cpu.write_reg(Register::A7, TEST_SP);
-        bus.write_long(TEST_SP, dst);
-        d.dispatch_quickdraw(true, 0x0DB, &mut cpu, &mut bus)
-            .unwrap()
-            .unwrap();
-        let region = bus.read_long(dst);
-        let bbox: Vec<u16> = (0..4).map(|i| bus.read_word(region + 2 + i * 2)).collect();
-        assert_eq!(bbox, [0, 0, 0, 0], "the region stays empty");
     }
 
     #[test]
