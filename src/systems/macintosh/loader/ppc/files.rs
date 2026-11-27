@@ -684,15 +684,11 @@ pub(super) fn ppc_pb_get_finfo(
     if ppc_fill_file_finfo_pb(
         memory,
         pb,
-        vfs_directories,
         vfs_files,
         vfs_metadata,
         vfs_resource_files,
         vfs_resources,
         &path,
-        hfs,
-        vfs_volumes,
-        resolved_vref,
     )
     .is_none()
     {
@@ -987,15 +983,11 @@ pub(super) fn ppc_vfs_basename(path: &str) -> &str {
 pub(super) fn ppc_fill_file_finfo_pb(
     memory: &mut PpcSectionMem,
     pb: u32,
-    vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
     vfs_metadata: &HashMap<String, ProcessVfsMetadata>,
     vfs_resource_files: &[PpcVfsResourceFileRecord],
     vfs_resources: &[PpcVfsResourceRecord],
     path: &str,
-    include_parent_dir_id: bool,
-    vfs_volumes: &[PpcVfsVolumeRecord],
-    vref: i16,
 ) -> Option<()> {
     let data_len = vfs_files
         .iter()
@@ -1015,12 +1007,9 @@ pub(super) fn ppc_fill_file_finfo_pb(
     let (created_date, modified_date) = ppc_file_dates_for_path(vfs_metadata, path);
     memory.write_u32_be(pb + 72, created_date)?;
     memory.write_u32_be(pb + 76, modified_date)?;
-    if include_parent_dir_id {
-        memory.write_u32_be(
-            pb + 100,
-            ppc_hfs_parent_dir_id_for_path(vfs_volumes, vfs_directories, vref, path),
-        )?;
-    }
+    // PBGetFInfo and PBHGetFInfo use the 80-byte basic parameter block.
+    // The parent ID at offset 100 belongs to PBGetCatInfo (Inside Macintosh
+    // Volume IV, pp. IV-149–IV-150).
     Some(())
 }
 
