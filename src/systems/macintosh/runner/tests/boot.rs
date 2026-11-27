@@ -186,7 +186,7 @@ fn init_app_seeds_current_application_fcb_low_memory_state() {
 }
 
 #[test]
-fn init_app_boots_68k_applications_with_paint_white_set() {
+fn init_app_seeds_68k_quickdraw_low_memory_defaults() {
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
     let app = LoadedApp {
         ppc: None,
@@ -204,6 +204,7 @@ fn init_app_boots_68k_applications_with_paint_white_set() {
         size_resource: None,
     };
     runner.bus.write_word(addr::PAINT_WHITE, 0);
+    runner.bus.write_long(0x0A06, 0);
 
     runner.init_app(&app);
 
@@ -212,6 +213,7 @@ fn init_app_boots_68k_applications_with_paint_white_set() {
         1,
         "68K applications boot with PaintWhite set, as PowerPC applications do"
     );
+    assert_eq!(runner.bus.read_long(0x0A06), u32::MAX, "ROM MinusOne");
 }
 
 #[test]

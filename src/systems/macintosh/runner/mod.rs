@@ -4402,6 +4402,7 @@ impl FixtureRunner {
         // running Mac OS 7.5.3 erases that content. Inside Macintosh
         // Volume I (1985), I-296--I-297.
         self.bus.write_word(addr::PAINT_WHITE, 1);
+        self.bus.write_long(addr::MINUS_ONE, u32::MAX);
         // SdVolume ($0260): current speaker volume, low three bits only.
         // Inside Macintosh Volume II, II-232; Volume III, III-166. Some
         // classic apps also read this byte directly and skip all audio when
