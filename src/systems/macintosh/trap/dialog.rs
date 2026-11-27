@@ -3287,10 +3287,14 @@ impl super::TrapDispatcher {
         let clip_right = view_rect.3;
         // The record's own line layout (TECalText's lineStarts), as the
         // PowerPC TextEdit draws it.
-        let line_starts = Self::te_line_starts(bus, te_handle);
+        let n_lines = usize::from(bus.read_word(te_ptr + Self::TE_N_LINES_OFFSET));
         let lines = crate::text_edit::record_lines(
-            line_starts.len().saturating_sub(1),
-            |line| line_starts.get(line).copied(),
+            n_lines,
+            |line| {
+                Some(usize::from(bus.read_word(
+                    te_ptr + Self::TE_LINE_STARTS_OFFSET + line as u32 * 2,
+                )))
+            },
             text_bytes.len(),
         );
 
@@ -3468,12 +3472,11 @@ impl super::TrapDispatcher {
                 (selection_start, selection_end),
                 caret_state,
             ) {
-                let ranges: Vec<(usize, usize)> = visual_lines
+                let ranges = visual_lines
                     .iter()
-                    .map(|&(start, end, _, _, _)| (start, end))
-                    .collect();
+                    .map(|&(start, end, _, _, _)| (start, end));
                 if let Some(&(line_start, line_end, line_top, line_bottom, line_x)) =
-                    crate::text_edit::caret_line(&ranges, selection_start)
+                    crate::text_edit::caret_line(ranges, selection_start)
                         .map(|line| &visual_lines[line])
                 {
                     let caret_offset = selection_start.min(line_end).max(line_start);

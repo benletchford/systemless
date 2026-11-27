@@ -2510,7 +2510,7 @@ pub(super) fn ppc_te_draw(
         .read_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET)
         .unwrap_or(0);
     if crate::text_edit::caret_shown(active, (sel_start, sel_end), caret_state) {
-        if let Some(line) = crate::text_edit::caret_line(&lines, sel_start) {
+        if let Some(line) = crate::text_edit::caret_line(lines.iter().copied(), sel_start) {
             let (start, end) = lines[line];
             'caret: {
                 let mut visible_end = end;

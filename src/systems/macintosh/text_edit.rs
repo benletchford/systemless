@@ -232,26 +232,27 @@ pub(crate) fn record_lines(
     if n_lines == 0 {
         return vec![(0, 0)];
     }
-    let starts: Vec<usize> = (0..n_lines)
-        .map(|line| line_start(line).unwrap_or(0).min(text_len))
-        .collect();
-    starts
-        .iter()
-        .enumerate()
-        .map(|(line, &start)| {
-            let end = starts.get(line + 1).copied().unwrap_or(text_len);
-            (start, end.max(start))
-        })
-        .collect()
+    let mut lines = Vec::with_capacity(n_lines);
+    let mut start = line_start(0).unwrap_or(0).min(text_len);
+    for line in 1..n_lines {
+        let end = line_start(line).unwrap_or(0).min(text_len);
+        lines.push((start, end.max(start)));
+        start = end;
+    }
+    lines.push((start, text_len));
+    lines
 }
 
 /// The line that shows an insertion point at `offset`: the first line that
 /// contains it, else the last line.
-pub(crate) fn caret_line(lines: &[(usize, usize)], offset: usize) -> Option<usize> {
+pub(crate) fn caret_line(
+    mut lines: impl ExactSizeIterator<Item = (usize, usize)>,
+    offset: usize,
+) -> Option<usize> {
+    let last = lines.len().checked_sub(1);
     lines
-        .iter()
-        .position(|&(start, end)| start <= offset && offset <= end)
-        .or_else(|| lines.len().checked_sub(1))
+        .position(|(start, end)| start <= offset && offset <= end)
+        .or(last)
 }
 
 /// The caret blink interval: the CaretTime global (0x02F4) when it is set,
@@ -346,10 +347,10 @@ mod tests {
             record_lines(2, |i| [0, 30].get(i).copied(), 5),
             [(0, 5), (5, 5)]
         );
-        assert_eq!(caret_line(&[(0, 4), (4, 9)], 4), Some(0));
-        assert_eq!(caret_line(&[(0, 4), (4, 9)], 7), Some(1));
-        assert_eq!(caret_line(&[(0, 4), (4, 9)], 20), Some(1));
-        assert_eq!(caret_line(&[], 0), None);
+        assert_eq!(caret_line([(0, 4), (4, 9)].into_iter(), 4), Some(0));
+        assert_eq!(caret_line([(0, 4), (4, 9)].into_iter(), 7), Some(1));
+        assert_eq!(caret_line([(0, 4), (4, 9)].into_iter(), 20), Some(1));
+        assert_eq!(caret_line([].into_iter(), 0), None);
     }
 
     #[test]
