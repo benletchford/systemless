@@ -960,8 +960,14 @@ impl PpcLoadedApp {
                         }
                         PpcImportDispatcherTarget::SetEmptyRgn => ppc_rgn_ptr(memory, cpu.gpr[3])
                             .is_none_or(|ptr| safe_output(ptr, 10)),
-                        PpcImportDispatcherTarget::TEIdle => ppc_te_record_ptr(memory, cpu.gpr[3])
-                            .is_none_or(|ptr| safe_output(ptr, (PPC_TE_CARET_STATE_OFFSET + 2) as i32)),
+                        // A due blink redraws, which needs the full dispatcher.
+                        PpcImportDispatcherTarget::TEIdle => {
+                            !dispatch_textedit::ppc_te_idle_blink_due(
+                                memory,
+                                cpu.gpr[3],
+                                import_tick_count,
+                            )
+                        }
                         PpcImportDispatcherTarget::InitCursor
                         | PpcImportDispatcherTarget::SetEventMask
                         | PpcImportDispatcherTarget::SystemTask

@@ -176,8 +176,9 @@ pub(super) fn ppc_te_initialize_record(
     let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_POINT_OFFSET + 2, dest_rect[1]);
     let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, 0);
     let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, 0);
-    let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, tick_count);
-    let _ = memory.write_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET, 0);
+    let (caret_time, caret_state) = crate::text_edit::restarted_caret(tick_count);
+    let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, caret_time);
+    let _ = memory.write_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET, caret_state);
     let _ = memory.write_u16_be(te_ptr + PPC_TE_JUST_OFFSET, 0);
     let _ = memory.write_u16_be(te_ptr + PPC_TE_LENGTH_OFFSET, 0);
     let _ = memory.write_u32_be(te_ptr + PPC_TE_HTEXT_OFFSET, h_text);
@@ -2348,11 +2349,21 @@ pub(super) fn ppc_te_draw(
     let mode = memory
         .read_u16_be(te_ptr + PPC_TE_TX_MODE_OFFSET)
         .unwrap_or(PPC_QD_TEXT_MODE_SRC_OR as u16) as i16;
-    let line_count = usize::from(
+    let n_lines = usize::from(
         memory
             .read_u16_be(te_ptr + PPC_TE_N_LINES_OFFSET)
             .unwrap_or(0),
     );
+    let lines = crate::text_edit::record_lines(
+        n_lines,
+        |line| {
+            memory
+                .read_u16_be(te_ptr + PPC_TE_LINE_STARTS_OFFSET + line as u32 * 2)
+                .map(usize::from)
+        },
+        text.len(),
+    );
+    let line_count = lines.len();
     let active = memory
         .read_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET)
         .unwrap_or(0)
@@ -2377,23 +2388,7 @@ pub(super) fn ppc_te_draw(
         top,
         fallback_line_height,
     );
-    for line in 0..line_count {
-        let start = usize::from(
-            memory
-                .read_u16_be(te_ptr + PPC_TE_LINE_STARTS_OFFSET + line as u32 * 2)
-                .unwrap_or(0),
-        )
-        .min(text.len());
-        let end = if line + 1 < line_count {
-            usize::from(
-                memory
-                    .read_u16_be(te_ptr + PPC_TE_LINE_STARTS_OFFSET + (line + 1) as u32 * 2)
-                    .unwrap_or(text.len() as u16),
-            )
-            .min(text.len())
-        } else {
-            text.len()
-        };
+    for (line, &(start, end)) in lines.iter().enumerate() {
         let mut visible_end = end;
         while visible_end > start && matches!(text[visible_end - 1], b' ' | b'\r' | b'\n') {
             visible_end -= 1;
@@ -2511,25 +2506,13 @@ pub(super) fn ppc_te_draw(
             .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
             .unwrap_or(0),
     );
-    if active && sel_start == sel_end {
-        for line in 0..line_count {
-            let start = usize::from(
-                memory
-                    .read_u16_be(te_ptr + PPC_TE_LINE_STARTS_OFFSET + line as u32 * 2)
-                    .unwrap_or(0),
-            )
-            .min(text.len());
-            let end = if line + 1 < line_count {
-                usize::from(
-                    memory
-                        .read_u16_be(te_ptr + PPC_TE_LINE_STARTS_OFFSET + (line + 1) as u32 * 2)
-                        .unwrap_or(text.len() as u16),
-                )
-                .min(text.len())
-            } else {
-                text.len()
-            };
-            if sel_start >= start && (sel_start <= end || line + 1 == line_count) {
+    let caret_state = memory
+        .read_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET)
+        .unwrap_or(0);
+    if crate::text_edit::caret_shown(active, (sel_start, sel_end), caret_state) {
+        if let Some(line) = crate::text_edit::caret_line(lines.iter().copied(), sel_start) {
+            let (start, end) = lines[line];
+            'caret: {
                 let mut visible_end = end;
                 while visible_end > start && matches!(text[visible_end - 1], b' ' | b'\r' | b'\n') {
                     visible_end -= 1;
@@ -2563,17 +2546,24 @@ pub(super) fn ppc_te_draw(
                         &text[start..caret_offset],
                     )
                 };
-                let mut caret_x = line_left + measured;
-                if caret_offset > start {
-                    caret_x = caret_x.saturating_sub(1);
-                }
                 let line_top = line_tops[line];
                 let line_bottom = line_top.saturating_add(line_height);
+                let caret_width = ppc_ui_theme(gworlds).provider().text_theme().caret_width;
+                let Some(caret) = crate::text_edit::caret_rect(
+                    (line_top, line_bottom),
+                    line_left,
+                    measured,
+                    caret_offset > start,
+                    caret_width,
+                    view_clip.unwrap_or((i16::MIN, i16::MIN, i16::MAX, i16::MAX)),
+                ) else {
+                    break 'caret;
+                };
                 let _ = ppc_paint_rect_bounds(
                     memory,
                     gworlds,
                     port,
-                    (line_top, caret_x, line_bottom, caret_x.saturating_add(1)),
+                    caret,
                     if ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7 {
                         ppc_theme_rgb(ppc_ui_theme(gworlds).provider().palette().selection)
                     } else if styled {
@@ -2583,7 +2573,7 @@ pub(super) fn ppc_te_draw(
                     },
                     explicit_index,
                 );
-                break;
+                break 'caret;
             }
         }
     }

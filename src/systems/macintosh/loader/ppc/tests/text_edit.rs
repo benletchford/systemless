@@ -1684,3 +1684,162 @@ fn te_get_offset_get_style_and_sel_view_follow_the_text_layout() {
     let caret_top = (loaded.cpu.gpr[3] >> 16) as u16 as i16;
     assert!(caret_top >= 10 && caret_top + line_height as i16 <= 40);
 }
+
+/// An active, empty TextEdit record over the main port's front buffer, with
+/// its view at (10, 20)-(40, 220) and its caret showing.
+fn caret_fixture(import: &[u8]) -> (PpcLoadedApp, u32, u32) {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(import)).unwrap();
+    let rects = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(rects, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, rects, 10, 20, 40, 220).unwrap();
+    ppc_write_rect(&mut loaded.memory, rects + 8, 10, 20, 40, 220).unwrap();
+    let mut last_mem_error = PPC_NO_ERR;
+    let te_handle = ppc_te_initialize_record(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        rects,
+        rects + 8,
+        PPC_MAIN_GWORLD,
+        1,
+        PPC_QD_TEXT_MODE_SRC_OR,
+        12,
+        PPC_RGB_BLACK,
+        false,
+    );
+    let record = loaded.memory.read_u32_be(te_handle).unwrap();
+    loaded
+        .memory
+        .write_u16_be(record + PPC_TE_ACTIVE_OFFSET, 1)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(record + PPC_TE_CARET_STATE_OFFSET, 0)
+        .unwrap();
+    (loaded, te_handle, record)
+}
+
+/// The front-buffer pixels of the fixture's view.
+fn view_pixels(loaded: &mut PpcLoadedApp) -> Vec<Option<u16>> {
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let mut pixels = Vec::new();
+    for y in 10..40 {
+        for x in 20..220 {
+            pixels.push(ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)));
+        }
+    }
+    pixels
+}
+
+#[test]
+fn typing_leaves_no_caret_behind_the_insertion_point() {
+    let (mut loaded, te_handle, _) = caret_fixture(b"TEKey");
+    for key in [b'A', b'B'] {
+        loaded.cpu.gpr[3] = u32::from(key);
+        loaded.cpu.gpr[4] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TEKey);
+    }
+    let typed = view_pixels(&mut loaded);
+    // The same record drawn once, on an erased view, shows "AB" and one caret.
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let background = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (219, 39)).unwrap();
+    for y in 10..40 {
+        for x in 20..220 {
+            ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), background);
+        }
+    }
+    let rect = PPC_DATA_BASE + 0x1000;
+    loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[4] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEUpdate);
+    assert_eq!(typed, view_pixels(&mut loaded));
+}
+
+#[test]
+fn a_caret_blink_erases_and_redraws_the_caret() {
+    let (mut loaded, te_handle, record) = caret_fixture(b"TEIdle");
+    loaded.set_clock_cycle_timing(1_000_000, 0);
+    loaded
+        .memory
+        .write_u32_be(crate::memory::globals::addr::CARET_TIME, 30)
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(record + PPC_TE_CARET_TIME_OFFSET, 100)
+        .unwrap();
+    let mut blink = |loaded: &mut PpcLoadedApp, tick: u32| {
+        loaded.set_tick_count(tick);
+        loaded.cpu.gpr[3] = te_handle;
+        run_test_import(loaded, PpcImportDispatcherTarget::TEIdle);
+        (
+            loaded
+                .memory
+                .read_u16_be(record + PPC_TE_CARET_STATE_OFFSET),
+            view_pixels(loaded),
+        )
+    };
+    // Each blink erases the view and redraws it: hidden, the view is all
+    // background; shown, it holds the caret; hidden again, it is as before.
+    let (state, hidden) = blink(&mut loaded, 130);
+    assert_eq!(state, Some(1));
+    assert!(hidden.iter().all(|pixel| *pixel == hidden[0]), "no caret");
+    let (state, shown) = blink(&mut loaded, 160);
+    assert_eq!(state, Some(0));
+    assert!(shown.iter().any(|pixel| *pixel != hidden[0]), "the caret");
+    let (state, hidden_again) = blink(&mut loaded, 190);
+    assert_eq!(state, Some(1));
+    assert_eq!(hidden_again, hidden);
+}
+
+#[test]
+fn te_activate_shows_the_caret_at_once_and_deactivate_removes_it() {
+    let (mut loaded, te_handle, record) = caret_fixture(b"TEActivate");
+    loaded.set_clock_cycle_timing(1_000_000, 0);
+    // Inactive, mid-blink with the caret hidden.
+    loaded
+        .memory
+        .write_u16_be(record + PPC_TE_ACTIVE_OFFSET, 0)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(record + PPC_TE_CARET_STATE_OFFSET, 1)
+        .unwrap();
+    loaded.set_tick_count(500);
+    loaded.cpu.gpr[3] = te_handle;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::TEActivate { active: true },
+    );
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(record + PPC_TE_CARET_STATE_OFFSET),
+        Some(0)
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(record + PPC_TE_CARET_TIME_OFFSET),
+        Some(500)
+    );
+    let active = view_pixels(&mut loaded);
+    assert!(active.iter().any(|pixel| *pixel != active[0]), "the caret");
+
+    loaded.set_tick_count(600);
+    loaded.cpu.gpr[3] = te_handle;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::TEActivate { active: false },
+    );
+    let inactive = view_pixels(&mut loaded);
+    assert!(
+        inactive.iter().all(|pixel| *pixel == inactive[0]),
+        "no caret"
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(record + PPC_TE_CARET_TIME_OFFSET),
+        Some(500),
+        "TEDeactivate leaves the blink timer alone"
+    );
+}
