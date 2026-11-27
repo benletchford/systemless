@@ -147,6 +147,7 @@ pub enum PpcImportDispatcherTarget {
     IsControlActive,
     CollapseWindow,
     IsWindowCollapsed,
+    IsWindowCollapsable,
     UnregisterAppearanceClient,
     SetControlFontStyle,
     GetSharedLibrary,
@@ -4962,6 +4963,10 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "IsWindowCollapsed" | "iswindowcollapsed",
         ) => PpcImportDispatcherTarget::IsWindowCollapsed,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "IsWindowCollapsable" | "iswindowcollapsable",
+        ) => PpcImportDispatcherTarget::IsWindowCollapsable,
         ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "NewFeaturesDialog") => {
             PpcImportDispatcherTarget::NewFeaturesDialog
         }

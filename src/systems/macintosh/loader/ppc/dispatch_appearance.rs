@@ -115,6 +115,10 @@ pub(super) fn dispatch_appearance_import(
             let result = crate::window_manager::evaluate_collapse_window(valid_window, collapse);
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
+        PpcImportDispatcherTarget::IsWindowCollapsable => {
+            // CollapseWindow cannot collapse windows on this backend.
+            Some(PpcImportAction::Return(0))
+        }
         PpcImportDispatcherTarget::IsWindowCollapsed => {
             let window = cpu.gpr[3];
             let valid_window = window != 0

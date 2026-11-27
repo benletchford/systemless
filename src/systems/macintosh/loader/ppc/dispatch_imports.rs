@@ -1679,6 +1679,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DeactivateControl
         | PpcImportDispatcherTarget::IsControlActive
         | PpcImportDispatcherTarget::CollapseWindow
+        | PpcImportDispatcherTarget::IsWindowCollapsable
         | PpcImportDispatcherTarget::IsWindowCollapsed
         | PpcImportDispatcherTarget::UnregisterAppearanceClient
         | PpcImportDispatcherTarget::SetControlFontStyle => {
