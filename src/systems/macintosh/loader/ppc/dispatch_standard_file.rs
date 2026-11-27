@@ -433,6 +433,9 @@ fn ppc_standard_file_get_entries(
         });
     }
     for file in vfs_files {
+        if file.path.starts_with(PPC_OPEN_RESOURCE_FORK_PREFIX) {
+            continue;
+        }
         let Some(name) = ppc_child_name_for_parent(parent_path, &file.path) else {
             continue;
         };
@@ -644,11 +647,22 @@ pub(super) fn ppc_restore_saved_detail<T>(
     }
 }
 
+/// The frame occupies one pixel outside the dialog content on each edge.
+fn ppc_standard_file_frame_bounds(bounds: (i16, i16, i16, i16)) -> (i16, i16, i16, i16) {
+    (
+        bounds.0.saturating_sub(1),
+        bounds.1.saturating_sub(1),
+        bounds.2.saturating_add(1),
+        bounds.3.saturating_add(1),
+    )
+}
+
 fn ppc_standard_file_save_pixels(
     memory: &mut PpcSectionMem,
     front: PpcFrontBuffer,
     bounds: (i16, i16, i16, i16),
 ) -> crate::memory::SavedPixels<(i32, i32, u16)> {
+    let bounds = ppc_standard_file_frame_bounds(bounds);
     let top = i32::from(bounds.0).max(0).min(front.height as i32);
     let left = i32::from(bounds.1).max(0).min(front.width as i32);
     let bottom = i32::from(bounds.2).max(0).min(front.height as i32);
@@ -1265,7 +1279,7 @@ fn ppc_sf_dialog_frame(
     front: PpcFrontBuffer,
     bounds: (i16, i16, i16, i16),
 ) {
-    let frame = (bounds.0 - 1, bounds.1 - 1, bounds.2 + 1, bounds.3 + 1);
+    let frame = ppc_standard_file_frame_bounds(bounds);
     if ppc_sf_classic(gworlds) || !ppc_draw_themed_dialog_frame(memory, gworlds, bounds, frame, 2) {
         ppc_sf_fill(memory, front, bounds, false);
         ppc_sf_border(memory, front, frame);
