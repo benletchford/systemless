@@ -864,123 +864,49 @@ pub fn draw_picture(
                 ];
                 pos += 6;
             }
-            0x20 => {
-                // Line: pnLoc(v:word, h:word) + newPt(v:word, h:word).
-                // Render via draw_picture_line; pen position updates for
-                // follow-on LineFrom / ShortLineFrom opcodes.
-                let pn_v = bus.read_word(pos) as i16;
-                let pn_h = bus.read_word(pos + 2) as i16;
-                let new_v = bus.read_word(pos + 4) as i16;
-                let new_h = bus.read_word(pos + 6) as i16;
-                pos += 8;
-                draw_picture_line(
-                    bus,
-                    screen_mode,
-                    pn_v,
-                    pn_h,
-                    new_v,
-                    new_h,
-                    dst_top,
-                    dst_left,
-                    frame_top,
-                    frame_left,
-                    scale_x,
-                    scale_y,
-                    clip_region.as_ref(),
-                    dst_clip,
-                    pen_size,
-                    pn_pat,
-                    fg_idx,
-                );
-                line_pen_v = new_v;
-                line_pen_h = new_h;
-            }
-            0x21 => {
-                // LineFrom: newPt(v:word, h:word). Draws from current
-                // pen to newPt and updates the pen.
-                let new_v = bus.read_word(pos) as i16;
-                let new_h = bus.read_word(pos + 2) as i16;
-                pos += 4;
-                draw_picture_line(
-                    bus,
-                    screen_mode,
-                    line_pen_v,
-                    line_pen_h,
-                    new_v,
-                    new_h,
-                    dst_top,
-                    dst_left,
-                    frame_top,
-                    frame_left,
-                    scale_x,
-                    scale_y,
-                    clip_region.as_ref(),
-                    dst_clip,
-                    pen_size,
-                    pn_pat,
-                    fg_idx,
-                );
-                line_pen_v = new_v;
-                line_pen_h = new_h;
-            }
-            0x22 => {
-                // ShortLine: pnLoc(v:word, h:word) + dh(i8) + dv(i8).
-                let pn_v = bus.read_word(pos) as i16;
-                let pn_h = bus.read_word(pos + 2) as i16;
-                let dh = bus.read_byte(pos + 4) as i8 as i16;
-                let dv = bus.read_byte(pos + 5) as i8 as i16;
-                pos += 6;
-                let new_v = pn_v.saturating_add(dv);
-                let new_h = pn_h.saturating_add(dh);
-                draw_picture_line(
-                    bus,
-                    screen_mode,
-                    pn_v,
-                    pn_h,
-                    new_v,
-                    new_h,
-                    dst_top,
-                    dst_left,
-                    frame_top,
-                    frame_left,
-                    scale_x,
-                    scale_y,
-                    clip_region.as_ref(),
-                    dst_clip,
-                    pen_size,
-                    pn_pat,
-                    fg_idx,
-                );
-                line_pen_v = new_v;
-                line_pen_h = new_h;
-            }
-            0x23 => {
-                // ShortLineFrom: dh(i8) + dv(i8). Draws from current
-                // pen + (dh, dv) and updates pen.
-                let dh = bus.read_byte(pos) as i8 as i16;
-                let dv = bus.read_byte(pos + 1) as i8 as i16;
-                pos += 2;
-                let new_v = line_pen_v.saturating_add(dv);
-                let new_h = line_pen_h.saturating_add(dh);
-                draw_picture_line(
-                    bus,
-                    screen_mode,
-                    line_pen_v,
-                    line_pen_h,
-                    new_v,
-                    new_h,
-                    dst_top,
-                    dst_left,
-                    frame_top,
-                    frame_left,
-                    scale_x,
-                    scale_y,
-                    clip_region.as_ref(),
-                    dst_clip,
-                    pen_size,
-                    pn_pat,
-                    fg_idx,
-                );
+            0x20..=0x23 => {
+                // Line and ShortLine carry an explicit start. Their From
+                // forms continue from the graphics pen's last position.
+                if opcode & 1 == 0 {
+                    line_pen_v = bus.read_word(pos) as i16;
+                    line_pen_h = bus.read_word(pos + 2) as i16;
+                    pos += 4;
+                }
+                let (new_v, new_h) = if opcode & 2 == 0 {
+                    let point = (bus.read_word(pos) as i16, bus.read_word(pos + 2) as i16);
+                    pos += 4;
+                    point
+                } else {
+                    let dh = bus.read_byte(pos) as i8 as i16;
+                    let dv = bus.read_byte(pos + 1) as i8 as i16;
+                    pos += 2;
+                    (line_pen_v.saturating_add(dv), line_pen_h.saturating_add(dh))
+                };
+
+                // Classic QuickDraw DrawLine forces the pattern bit and
+                // rejects reserved boolean modes. DoLine still moves the
+                // pen, so subsequent From opcodes must keep their origin.
+                if !(16..=31).contains(&pen.base_mode()) {
+                    draw_picture_line(
+                        bus,
+                        screen_mode,
+                        line_pen_v,
+                        line_pen_h,
+                        new_v,
+                        new_h,
+                        dst_top,
+                        dst_left,
+                        frame_top,
+                        frame_left,
+                        scale_x,
+                        scale_y,
+                        clip_region.as_ref(),
+                        dst_clip,
+                        pen_size,
+                        pn_pat,
+                        fg_idx,
+                    );
+                }
                 line_pen_v = new_v;
                 line_pen_h = new_h;
             }

@@ -3377,3 +3377,18 @@ fn pict_paint_rect_honours_boolean_pen_modes() {
         }
     }
 }
+
+#[test]
+fn pict_reserved_line_mode_moves_pen_without_drawing() {
+    let mut commands = Vec::new();
+    push_origin_test_op(&mut commands, true, 0x08, &[23]);
+    push_origin_test_op(&mut commands, true, 0x22, &[4, 2, 0x0500]);
+    push_origin_test_op(&mut commands, true, 0x08, &[8]);
+    push_origin_test_op(&mut commands, true, 0x23, &[0x0200]);
+    let picture = finish_origin_test_picture((0, 0, 16, 16), true, commands);
+    let pixels = render_text_picture(&picture, 16, 16);
+    assert_eq!(
+        &pixels[4 * 16..5 * 16],
+        &[0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 0, 0, 0, 0, 0, 0]
+    );
+}
