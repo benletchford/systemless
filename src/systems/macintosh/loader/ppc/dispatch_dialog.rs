@@ -4127,7 +4127,9 @@ fn ppc_te_create_for_dialog_item(
         let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, 0);
         let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, length);
         let _ = memory.write_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET, 1);
-        let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, tick_count);
+        let (caret_time, caret_state) = crate::text_edit::restarted_caret(tick_count);
+        let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, caret_time);
+        let _ = memory.write_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET, caret_state);
     }
     te_handle
 }
@@ -4217,7 +4219,9 @@ fn ppc_select_dialog_item_text(
     let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, eval.sel_start);
     let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, eval.sel_end);
     let _ = memory.write_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET, 1);
-    let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, tick_count);
+    let (caret_time, caret_state) = crate::text_edit::restarted_caret(tick_count);
+    let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, caret_time);
+    let _ = memory.write_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET, caret_state);
 }
 
 fn ppc_get_dialog_item(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcHandleRecord]) {

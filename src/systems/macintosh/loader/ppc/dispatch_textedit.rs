@@ -4,42 +4,48 @@ use super::*;
 use crate::event_queue::EventQueue;
 use std::collections::HashMap;
 
-pub(super) fn dispatch_te_idle_fast(
-    cpu: &PpcCpu,
+/// Whether TEIdle on the record `te_handle` blinks its caret now, by the
+/// shared rule (`crate::text_edit::caret_blink_due`). Inside Macintosh: Text
+/// (1993), p. 2-51.
+pub(super) fn ppc_te_idle_blink_due(
     memory: &mut PpcSectionMem,
+    te_handle: u32,
     tick_count: u32,
-) -> PpcImportAction {
-    // Text (1993), p. 2-51: TEIdle only blinks an insertion-point
-    // caret in an active record. Keep its public timing/state fields
-    // coherent even though the framebuffer redraw stays deterministic.
-    if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[3]) {
-        let active = memory
+) -> bool {
+    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+        return false;
+    };
+    crate::text_edit::caret_blink_due(
+        memory
             .read_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET)
             .unwrap_or(0)
-            != 0;
-        let start = memory
-            .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
-            .unwrap_or(0);
-        let end = memory
-            .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
-            .unwrap_or(0);
-        let previous = memory
+            != 0,
+        (
+            memory
+                .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
+                .unwrap_or(0),
+            memory
+                .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
+                .unwrap_or(0),
+        ),
+        tick_count,
+        memory
             .read_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET)
-            .unwrap_or(0);
-        let caret_time = memory
-            .read_u32_be(crate::memory::globals::addr::CARET_TIME)
-            .unwrap_or(PPC_DEFAULT_CARET_TIME_TICKS);
-        if active && start == end && tick_count.wrapping_sub(previous) >= caret_time {
-            let caret = memory
-                .read_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET)
-                .unwrap_or(0);
-            let _ = memory.write_u16_be(
-                te_ptr + PPC_TE_CARET_STATE_OFFSET,
-                if caret == 0 { 1 } else { 0 },
-            );
-            let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, tick_count);
-        }
-    }
+            .unwrap_or(0),
+        crate::text_edit::caret_interval(
+            memory.read_u32_be(crate::memory::globals::addr::CARET_TIME),
+        ),
+    )
+}
+
+/// TEIdle on the run loop's fast path, which the run loop takes only when no
+/// blink is due (`ppc_te_idle_blink_due`): there is nothing to change or draw.
+/// A due blink goes through the full dispatcher, which redraws the caret.
+pub(super) fn dispatch_te_idle_fast(
+    _cpu: &PpcCpu,
+    _memory: &mut PpcSectionMem,
+    _tick_count: u32,
+) -> PpcImportAction {
     PpcImportAction::ReturnPreserve
 }
 
@@ -200,13 +206,15 @@ pub(super) fn dispatch_textedit_import(
                     handles,
                     te_handle,
                 );
-                ppc_te_draw(
+                ppc_te_redraw(
                     memory,
                     handles,
                     gworlds,
+                    toolbox_startup,
                     te_handle,
                     current_gworld,
                     *quickdraw_fore_color,
+                    *quickdraw_back_color,
                     quickdraw_fore_indices,
                 );
             }
@@ -252,13 +260,15 @@ pub(super) fn dispatch_textedit_import(
                     te_handle,
                 );
                 if redraw {
-                    ppc_te_draw(
+                    ppc_te_redraw(
                         memory,
                         handles,
                         gworlds,
+                        toolbox_startup,
                         te_handle,
                         current_gworld,
                         *quickdraw_fore_color,
+                        *quickdraw_back_color,
                         quickdraw_fore_indices,
                     );
                 }
@@ -303,14 +313,28 @@ pub(super) fn dispatch_textedit_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::TEActivate { active } => {
-            // Inside Macintosh: Text (1993), pp. 2-49–2-50: activation changes
-            // the TERec's active state; selection/caret drawing is refreshed by
-            // TEUpdate and TEIdle.
+            // Inside Macintosh: Text (1993), pp. 2-49–2-50: TEActivate shows
+            // the selection or the caret at once, restarting its blink;
+            // TEDeactivate removes them. Both redraw the record, as on 68K.
             if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[3]) {
                 let _ =
                     memory.write_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET, if active { 1 } else { 0 });
-                let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, tick_count);
-                let _ = memory.write_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET, 0);
+                if active {
+                    let (caret_time, caret_state) = crate::text_edit::restarted_caret(tick_count);
+                    let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, caret_time);
+                    let _ = memory.write_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET, caret_state);
+                }
+                ppc_te_redraw(
+                    memory,
+                    handles,
+                    gworlds,
+                    toolbox_startup,
+                    cpu.gpr[3],
+                    current_gworld,
+                    *quickdraw_fore_color,
+                    *quickdraw_back_color,
+                    quickdraw_fore_indices,
+                );
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -435,13 +459,15 @@ pub(super) fn dispatch_textedit_import(
                 );
             }
             *last_mem_error = result;
-            ppc_te_draw(
+            ppc_te_redraw(
                 memory,
                 handles,
                 gworlds,
+                toolbox_startup,
                 te_handle,
                 current_gworld,
                 *quickdraw_fore_color,
+                *quickdraw_back_color,
                 quickdraw_fore_indices,
             );
             Some(PpcImportAction::ReturnPreserve)
@@ -487,13 +513,15 @@ pub(super) fn dispatch_textedit_import(
                 &[],
             );
             *last_mem_error = result;
-            ppc_te_draw(
+            ppc_te_redraw(
                 memory,
                 handles,
                 gworlds,
+                toolbox_startup,
                 te_handle,
                 current_gworld,
                 *quickdraw_fore_color,
+                *quickdraw_back_color,
                 quickdraw_fore_indices,
             );
             Some(PpcImportAction::ReturnPreserve)
@@ -516,13 +544,15 @@ pub(super) fn dispatch_textedit_import(
                 cpu.gpr[3] as u8,
             );
             *last_mem_error = result;
-            ppc_te_draw(
+            ppc_te_redraw(
                 memory,
                 handles,
                 gworlds,
+                toolbox_startup,
                 cpu.gpr[4],
                 current_gworld,
                 *quickdraw_fore_color,
+                *quickdraw_back_color,
                 quickdraw_fore_indices,
             );
             Some(PpcImportAction::ReturnPreserve)
@@ -610,13 +640,15 @@ pub(super) fn dispatch_textedit_import(
                         .map_or(*quickdraw_back_color, |colors| colors.1);
                     ppc_paint_rect_bounds(memory, gworlds, port, view, background, None);
                 }
-                ppc_te_draw(
+                ppc_te_redraw(
                     memory,
                     handles,
                     gworlds,
+                    toolbox_startup,
                     te_handle,
                     current_gworld,
                     *quickdraw_fore_color,
+                    *quickdraw_back_color,
                     quickdraw_fore_indices,
                 );
             }
@@ -630,7 +662,35 @@ pub(super) fn dispatch_textedit_import(
                 Some(PpcImportAction::ReturnPreserve)
             }
         }
-        PpcImportDispatcherTarget::TEIdle => Some(dispatch_te_idle_fast(cpu, memory, tick_count)),
+        PpcImportDispatcherTarget::TEIdle => {
+            // Text (1993), p. 2-51: TEIdle blinks the insertion caret of an
+            // active record. The blink toggles caretState and redraws, as
+            // the 68K TEIdle does, so a hidden caret's pixels are erased.
+            if ppc_te_idle_blink_due(memory, cpu.gpr[3], tick_count) {
+                if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[3]) {
+                    let state = memory
+                        .read_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET)
+                        .unwrap_or(0);
+                    let _ = memory.write_u16_be(
+                        te_ptr + PPC_TE_CARET_STATE_OFFSET,
+                        crate::text_edit::toggled_caret_state(state),
+                    );
+                    let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, tick_count);
+                    ppc_te_redraw(
+                        memory,
+                        handles,
+                        gworlds,
+                        toolbox_startup,
+                        cpu.gpr[3],
+                        current_gworld,
+                        *quickdraw_fore_color,
+                        *quickdraw_back_color,
+                        quickdraw_fore_indices,
+                    );
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::TEUpdate => {
             // Text (1993), p. 2-88: redraw the edit record within the caller's
             // update rectangle. The existing QuickDraw target clips writes to
@@ -688,13 +748,15 @@ pub(super) fn dispatch_textedit_import(
         PpcImportDispatcherTarget::TESetAlignment => {
             if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[4]) {
                 let _ = memory.write_u16_be(te_ptr + PPC_TE_JUST_OFFSET, cpu.gpr[3] as u16);
-                ppc_te_draw(
+                ppc_te_redraw(
                     memory,
                     handles,
                     gworlds,
+                    toolbox_startup,
                     cpu.gpr[4],
                     current_gworld,
                     *quickdraw_fore_color,
+                    *quickdraw_back_color,
                     quickdraw_fore_indices,
                 );
             }
@@ -756,13 +818,15 @@ pub(super) fn dispatch_textedit_import(
                     );
                 }
             }
-            ppc_te_draw(
+            ppc_te_redraw(
                 memory,
                 handles,
                 gworlds,
+                toolbox_startup,
                 te_handle,
                 current_gworld,
                 *quickdraw_fore_color,
+                *quickdraw_back_color,
                 quickdraw_fore_indices,
             );
             Some(PpcImportAction::ReturnPreserve)
@@ -878,13 +942,15 @@ pub(super) fn dispatch_textedit_import(
                     handles,
                     te_handle,
                 );
-                ppc_te_draw(
+                ppc_te_redraw(
                     memory,
                     handles,
                     gworlds,
+                    toolbox_startup,
                     te_handle,
                     current_gworld,
                     *quickdraw_fore_color,
+                    *quickdraw_back_color,
                     quickdraw_fore_indices,
                 );
             }
@@ -990,13 +1056,15 @@ pub(super) fn dispatch_textedit_import(
                 cut,
             );
             *last_mem_error = result;
-            ppc_te_draw(
+            ppc_te_redraw(
                 memory,
                 handles,
                 gworlds,
+                toolbox_startup,
                 te_handle,
                 current_gworld,
                 *quickdraw_fore_color,
+                *quickdraw_back_color,
                 quickdraw_fore_indices,
             );
             Some(PpcImportAction::ReturnPreserve)
@@ -1041,13 +1109,15 @@ pub(super) fn dispatch_textedit_import(
                 &bytes,
             );
             *last_mem_error = result;
-            ppc_te_draw(
+            ppc_te_redraw(
                 memory,
                 handles,
                 gworlds,
+                toolbox_startup,
                 te_handle,
                 current_gworld,
                 *quickdraw_fore_color,
+                *quickdraw_back_color,
                 quickdraw_fore_indices,
             );
             Some(PpcImportAction::ReturnPreserve)
@@ -1260,4 +1330,50 @@ pub(super) fn ppc_te_apply_style_scrap_to_range(
         );
     }
     changed
+}
+
+/// Erases the record's view rectangle with its port's background, then draws
+/// the record, as every 68K TextEdit redraw does (`draw_te_contents` with
+/// `erase_background`). Drawing over the old pixels instead leaves the
+/// previous caret, and glyphs that moved, behind. Inside Macintosh: Text
+/// (1993), pp. 2-16 and 2-29: viewRect bounds what TextEdit draws.
+#[allow(clippy::too_many_arguments)]
+fn ppc_te_redraw(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    gworlds: &[PpcGWorldRecord],
+    toolbox_startup: &mut PpcToolboxStartupState,
+    te_handle: u32,
+    current_gworld: u32,
+    fore_color: PpcRgbColor,
+    back_color: PpcRgbColor,
+    fore_indices: &HashMap<u32, u8>,
+) {
+    if let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) {
+        let port = memory
+            .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
+            .filter(|port| *port != 0 && gworlds.iter().any(|g| g.port == *port))
+            .unwrap_or(current_gworld);
+        if let Some(view) = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET) {
+            super::dispatch_quickdraw::ppc_fill_port_background(
+                memory,
+                gworlds,
+                toolbox_startup,
+                fore_indices,
+                port,
+                view,
+                fore_color,
+                back_color,
+            );
+        }
+    }
+    ppc_te_draw(
+        memory,
+        handles,
+        gworlds,
+        te_handle,
+        current_gworld,
+        fore_color,
+        fore_indices,
+    );
 }

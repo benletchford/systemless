@@ -551,7 +551,6 @@ impl super::TrapDispatcher {
     const TE_N_LINES_OFFSET: u32 = 0x5E;
     const TE_LINE_STARTS_OFFSET: u32 = 0x60;
     const TE_REC_MIN_SIZE: u32 = 128;
-    const TE_CARET_BLINK_TICKS: u32 = 32;
     // TextEdit draws inside the destination rectangle (IM:I I-373 to I-374);
     // BasiliskII/System 7.5.3 `dialog_visual_textedit_smoke` pins the ROM's
     // flush-left glyph origin one pixel in from destRect.left.
@@ -2411,8 +2410,9 @@ impl super::TrapDispatcher {
         bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET + 2, dest_rect.1 as u16);
         bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, 0);
         bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, 0);
-        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.current_tick());
-        bus.write_word(te_ptr + Self::TE_CARET_STATE_OFFSET, 0);
+        let (caret_time, caret_state) = crate::text_edit::restarted_caret(self.current_tick());
+        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, caret_time);
+        bus.write_word(te_ptr + Self::TE_CARET_STATE_OFFSET, caret_state);
         bus.write_word(te_ptr + Self::TE_LENGTH_OFFSET, 0);
         bus.write_long(te_ptr + Self::TE_HTEXT_OFFSET, h_text);
         bus.write_word(te_ptr + Self::TE_TX_FONT_OFFSET, self.tx_font as u16);
@@ -2583,8 +2583,9 @@ impl super::TrapDispatcher {
         bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET + 2, dest_rect.1 as u16);
         bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, 0);
         bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, 0);
-        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.current_tick());
-        bus.write_word(te_ptr + Self::TE_CARET_STATE_OFFSET, 0);
+        let (caret_time, caret_state) = crate::text_edit::restarted_caret(self.current_tick());
+        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, caret_time);
+        bus.write_word(te_ptr + Self::TE_CARET_STATE_OFFSET, caret_state);
         bus.write_word(te_ptr + Self::TE_JUST_OFFSET, 0);
         bus.write_word(te_ptr + Self::TE_LENGTH_OFFSET, 0);
         bus.write_long(te_ptr + Self::TE_HTEXT_OFFSET, h_text);
@@ -2823,18 +2824,18 @@ impl super::TrapDispatcher {
         if te_ptr == 0 {
             return;
         }
-        if bus.read_word(te_ptr + Self::TE_ACTIVE_OFFSET) == 0 {
-            return;
-        }
-
-        let sel_start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET);
-        let sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET);
-        if sel_start != sel_end {
-            return;
-        }
-
-        let last_toggle = bus.read_long(te_ptr + Self::TE_CARET_TIME_OFFSET);
-        if self.current_tick().wrapping_sub(last_toggle) < Self::TE_CARET_BLINK_TICKS {
+        if !crate::text_edit::caret_blink_due(
+            bus.read_word(te_ptr + Self::TE_ACTIVE_OFFSET) != 0,
+            (
+                bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET),
+                bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET),
+            ),
+            self.current_tick(),
+            bus.read_long(te_ptr + Self::TE_CARET_TIME_OFFSET),
+            crate::text_edit::caret_interval(Some(
+                bus.read_long(crate::memory::globals::addr::CARET_TIME),
+            )),
+        ) {
             return;
         }
 
@@ -2846,7 +2847,7 @@ impl super::TrapDispatcher {
         let caret_state = bus.read_word(te_ptr + Self::TE_CARET_STATE_OFFSET);
         bus.write_word(
             te_ptr + Self::TE_CARET_STATE_OFFSET,
-            if caret_state == 0 { 1 } else { 0 },
+            crate::text_edit::toggled_caret_state(caret_state),
         );
         bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.current_tick());
         self.draw_te_contents_region(cpu, bus, te_handle, true, TeRepaint::CaretLine);
@@ -3284,14 +3285,14 @@ impl super::TrapDispatcher {
         let clip_left = view_rect.1;
         let mut clip_bottom = view_rect.2;
         let clip_right = view_rect.3;
-        let box_width = (dest_rect.3 - dest_rect.1).max(0);
-        let lines = if text_bytes.is_empty() {
-            vec![(0usize, 0usize)]
-        } else if uses_styled_runs {
-            self.te_wrap_lines_styled(&styled_runs, &text_bytes, box_width)
-        } else {
-            self.te_wrap_lines(font, size, &text_bytes, box_width)
-        };
+        // The record's own line layout (TECalText's lineStarts), as the
+        // PowerPC TextEdit draws it.
+        let line_starts = Self::te_line_starts(bus, te_handle);
+        let lines = crate::text_edit::record_lines(
+            line_starts.len().saturating_sub(1),
+            |line| line_starts.get(line).copied(),
+            text_bytes.len(),
+        );
 
         if matches!(repaint, TeRepaint::CaretLine) {
             // TEIdle changes only an insertion caret. Repaint its complete
@@ -3455,20 +3456,25 @@ impl super::TrapDispatcher {
         }
 
         let te_active = bus.read_word(te_ptr + Self::TE_ACTIVE_OFFSET) != 0;
-        let caret_visible = bus.read_word(te_ptr + Self::TE_CARET_STATE_OFFSET) == 0;
+        let caret_state = bus.read_word(te_ptr + Self::TE_CARET_STATE_OFFSET);
         let outline_hilite = self.te_feature_bit(te_handle, Self::TE_FEATURE_OUTLINE_HILITE);
         let sel_start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
         let sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
         let (selection_start, selection_end) =
             normalize_selection_bounds(sel_start, sel_end, usize::MAX);
         if selection_start == selection_end {
-            if te_active && caret_visible {
-                if let Some(&(line_start, line_end, line_top, line_bottom, line_x)) = visual_lines
+            if crate::text_edit::caret_shown(
+                te_active,
+                (selection_start, selection_end),
+                caret_state,
+            ) {
+                let ranges: Vec<(usize, usize)> = visual_lines
                     .iter()
-                    .find(|&&(start, end, _, _, _)| {
-                        selection_start >= start && selection_start <= end
-                    })
-                    .or_else(|| visual_lines.last())
+                    .map(|&(start, end, _, _, _)| (start, end))
+                    .collect();
+                if let Some(&(line_start, line_end, line_top, line_bottom, line_x)) =
+                    crate::text_edit::caret_line(&ranges, selection_start)
+                        .map(|line| &visual_lines[line])
                 {
                     let caret_offset = selection_start.min(line_end).max(line_start);
                     let measured_width = if uses_styled_runs {
@@ -3487,22 +3493,13 @@ impl super::TrapDispatcher {
                             caret_offset,
                         )
                     };
-                    let mut caret_x = line_x + measured_width;
-                    if caret_offset > line_start {
-                        caret_x = caret_x.saturating_sub(1);
-                    }
                     let caret_width = self.ui_theme().text_theme().caret_width.max(1);
-                    // Text (1993), pp. 2-16 and 2-29: viewRect bounds the
-                    // visible portion of a TextEdit record. A partial last
-                    // line can be shorter than lineHeight. Painting its full
-                    // caret leaves pixels outside the area erased next time.
-                    if let Some((top, left, bottom, right)) = Self::rect_intersection(
-                        (
-                            line_top,
-                            caret_x,
-                            line_bottom,
-                            caret_x.saturating_add(caret_width),
-                        ),
+                    if let Some((top, left, bottom, right)) = crate::text_edit::caret_rect(
+                        (line_top, line_bottom),
+                        line_x,
+                        measured_width,
+                        caret_offset > line_start,
+                        caret_width,
                         view_rect,
                     ) {
                         if !self.draw_theme_caret_clipped(
@@ -5269,8 +5266,9 @@ impl super::TrapDispatcher {
         // activating an item must make that record active before later null
         // events call TEIdle for caret blinking.
         bus.write_word(te_ptr + Self::TE_ACTIVE_OFFSET, 1);
-        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.current_tick());
-        bus.write_word(te_ptr + Self::TE_CARET_STATE_OFFSET, 0);
+        let (caret_time, caret_state) = crate::text_edit::restarted_caret(self.current_tick());
+        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, caret_time);
+        bus.write_word(te_ptr + Self::TE_CARET_STATE_OFFSET, caret_state);
         self.draw_te_contents(cpu, bus, text_handle, true);
         true
     }
@@ -16629,8 +16627,10 @@ impl super::TrapDispatcher {
                 let te_ptr = Self::te_record_ptr(bus, te_handle);
                 if te_ptr != 0 {
                     bus.write_word(te_ptr + Self::TE_ACTIVE_OFFSET, 1);
-                    bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.current_tick());
-                    bus.write_word(te_ptr + Self::TE_CARET_STATE_OFFSET, 0);
+                    let (caret_time, caret_state) =
+                        crate::text_edit::restarted_caret(self.current_tick());
+                    bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, caret_time);
+                    bus.write_word(te_ptr + Self::TE_CARET_STATE_OFFSET, caret_state);
                     self.draw_te_contents(cpu, bus, te_handle, true);
                 }
                 cpu.write_reg(Register::A7, sp + 4);

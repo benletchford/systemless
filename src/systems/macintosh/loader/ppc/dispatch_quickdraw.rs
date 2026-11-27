@@ -3502,3 +3502,47 @@ impl crate::quickdraw::routines::QuickDrawRoutineContext for PpcQuickDrawRoutine
         );
     }
 }
+
+/// Fills `rect` (local to `port`) with `port`'s background, as EraseRect does
+/// there: a colour port's own foreground and background colours, or the
+/// given colours for a basic port, with the port's background pattern.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_fill_port_background(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    toolbox_startup: &mut PpcToolboxStartupState,
+    fore_indices: &HashMap<u32, u8>,
+    port: u32,
+    rect: (i16, i16, i16, i16),
+    fore_color: PpcRgbColor,
+    back_color: PpcRgbColor,
+) {
+    use crate::quickdraw::routines::QuickDrawRoutineContext;
+    let color_port = memory
+        .read_u16_be(port.wrapping_add(6))
+        .is_some_and(|version| version & 0xc000 == 0xc000);
+    let (fore_color, back_color) = if color_port {
+        (
+            ppc_read_rgb_color(memory, port + PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET)
+                .unwrap_or(fore_color),
+            ppc_read_rgb_color(memory, port + PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET)
+                .unwrap_or(back_color),
+        )
+    } else {
+        (fore_color, back_color)
+    };
+    PpcQuickDrawRoutines {
+        memory,
+        gworlds,
+        port,
+        toolbox_startup,
+        fore: (fore_color, fore_indices.get(&port).copied()),
+        back_color,
+    }
+    .fill_rect_with_background(crate::trap::types::Rect {
+        top: rect.0,
+        left: rect.1,
+        bottom: rect.2,
+        right: rect.3,
+    });
+}
