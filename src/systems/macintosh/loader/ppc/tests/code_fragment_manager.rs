@@ -959,7 +959,11 @@ fn initial_bundled_libraries_bind_dependencies_in_deterministic_order() {
 #[test]
 fn get_shared_library_binds_bundled_dependencies_before_relocation() {
     let application = synthetic_pef_with_import(b"GetSharedLibrary");
-    let library = synthetic_pef_with_library_import(b"RuntimeLibrary", b"RegisterFragment");
+    let library = synthetic_pef_with_reloc_chunks(
+        b"RuntimeLibrary",
+        b"RegisterFragment",
+        &[sm_index_reloc(0x30, 0)],
+    );
     let runtime = synthetic_pef_with_single_export(b"RegisterFragment", 2, 0, 1);
     let mut loaded = load_pef_application_with_config_and_optional_system_reservation(
         &application,
