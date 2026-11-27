@@ -4681,6 +4681,56 @@ fn hle_import_runner_handles_color_cursor_resources() {
 }
 
 #[test]
+fn get_ccursor_materializes_independent_live_pixmap_and_color_table_handles() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetCCursor")).unwrap();
+    loaded.set_current_resource_refnum(5);
+    let mut data = vec![0; 2458];
+    data[0..2].copy_from_slice(&0x8001u16.to_be_bytes());
+    data[2..6].copy_from_slice(&96u32.to_be_bytes());
+    data[6..10].copy_from_slice(&146u32.to_be_bytes());
+    data[100..102].copy_from_slice(&0x8010u16.to_be_bytes());
+    data[106..108].copy_from_slice(&16u16.to_be_bytes());
+    data[108..110].copy_from_slice(&16u16.to_be_bytes());
+    data[128..130].copy_from_slice(&8u16.to_be_bytes());
+    data[138..142].copy_from_slice(&402u32.to_be_bytes());
+    data[146] = 0x42;
+    data[408..410].copy_from_slice(&255u16.to_be_bytes());
+    loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+        ref_num: 5,
+        path: "Color Cursor Fixture".to_string(),
+        res_type: u32::from_be_bytes(*b"crsr"),
+        res_id: 9999,
+        name: vec![],
+        data: data.into(),
+        raw_data: None,
+        raw_attrs: None,
+        attrs: 0,
+        handle: 0,
+    });
+    loaded.cpu.gpr[3] = 9999;
+
+    assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+    let cursor_handle = loaded.cpu.gpr[3];
+    let cursor = loaded.memory.read_u32_be(cursor_handle).unwrap();
+    let map_handle = loaded.memory.read_u32_be(cursor + 2).unwrap();
+    let map = loaded.memory.read_u32_be(map_handle).unwrap();
+    let pixel_handle = loaded.memory.read_u32_be(cursor + 6).unwrap();
+    let pixels = loaded.memory.read_u32_be(pixel_handle).unwrap();
+    let table_handle = loaded.memory.read_u32_be(map + 42).unwrap();
+    let table = loaded.memory.read_u32_be(table_handle).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(map), Some(pixels));
+    assert_eq!(loaded.memory.read_u8(pixels), Some(0x42));
+    assert_eq!(loaded.memory.read_u16_be(table + 6), Some(255));
+    assert_eq!(loaded.process_file_system.vfs_resources[0].handle, 0);
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeCCursor);
+    assert!(test_handle_records!(loaded).is_empty());
+    for handle in [cursor_handle, map_handle, pixel_handle, table_handle] {
+        assert_eq!(loaded.memory.read_u32_be(handle), Some(0));
+    }
+}
+
+#[test]
 fn hle_import_runner_handles_cursor_resources_and_system_fallbacks() {
     let pef = synthetic_pef_with_import(b"GetCursor");
     let mut loaded = load_pef_application(&pef).unwrap();
