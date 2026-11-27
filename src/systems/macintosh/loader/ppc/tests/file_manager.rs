@@ -3983,6 +3983,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         let pb = PPC_DATA_BASE + 0x1000;
         let name_ptr = pb + 128;
         loaded.memory.add_region(pb, vec![0; 256]);
+        loaded.memory.write_u32_be(pb + 100, 0xdead_beef).unwrap();
         write_ppc_pstring(&mut loaded.memory, name_ptr, b"Test App HighScores");
         loaded.memory.write_u16_be(pb + 16, 0x3fff).unwrap();
         loaded.memory.write_u32_be(pb + 18, name_ptr).unwrap();
@@ -4048,9 +4049,10 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
             .len() as u32
         );
         assert_eq!(
-            loaded.memory.read_u32_be(pb + 100),
-            Some(PPC_PREFERENCES_DIR_ID)
+            loaded.memory.read_u32_be(pb + 48),
+            Some(ppc_synthetic_file_id("System Folder/Preferences/Test App HighScores"))
         );
+        assert_eq!(loaded.memory.read_u32_be(pb + 100), Some(0xdead_beef));
     }
 
     #[test]
