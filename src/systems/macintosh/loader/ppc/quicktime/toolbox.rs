@@ -1072,6 +1072,22 @@ pub(super) fn dispatch_movie_toolbox(
             );
             PpcImportAction::Return(region)
         }
+        Op::GetMovieDisplayClipRgn => {
+            if !movie_valid {
+                ppc_qt_record_error(quicktime, INVALID_MOVIE);
+                return PpcImportAction::Return(0);
+            }
+            let Some(storage) = quicktime.movie_display_clip.as_deref() else {
+                ppc_qt_record_error(quicktime, PPC_NO_ERR);
+                return PpcImportAction::Return(0);
+            };
+            let region = context.new_region(storage);
+            ppc_qt_record_error(
+                quicktime,
+                if region == 0 { PPC_MEM_FULL_ERR } else { PPC_NO_ERR },
+            );
+            PpcImportAction::Return(region)
+        }
         Op::SetMovieDisplayClipRgn => {
             if !movie_valid {
                 ppc_qt_record_error(quicktime, INVALID_MOVIE);
@@ -1366,6 +1382,34 @@ pub(super) fn dispatch_movie_toolbox(
         }
         Op::SetIdentityMatrix => {
             let _ = write_matrix(context.memory, gpr[3], &IDENTITY_MATRIX);
+            PpcImportAction::ReturnPreserve
+        }
+        Op::ScaleMatrix | Op::TranslateMatrix => {
+            let Some(matrix) = read_matrix(context.memory, gpr[3]) else {
+                return PpcImportAction::ReturnPreserve;
+            };
+            let fixed = |value| f64::from(value as i32) / FIXED_ONE;
+            let (scale_x, scale_y, offset_x, offset_y) = if matches!(operation, Op::ScaleMatrix) {
+                let scale_x = fixed(gpr[4]);
+                let scale_y = fixed(gpr[5]);
+                (
+                    scale_x,
+                    scale_y,
+                    fixed(gpr[6]) * (1.0 - scale_x),
+                    fixed(gpr[7]) * (1.0 - scale_y),
+                )
+            } else {
+                (1.0, 1.0, fixed(gpr[4]), fixed(gpr[5]))
+            };
+            let mut matrix = matrix_to_f64(&matrix);
+            // Concatenate the scale and offset after the existing row-vector transform.
+            for row in matrix.chunks_exact_mut(3) {
+                row[0] = row[0] * scale_x + row[2] * offset_x;
+                row[1] = row[1] * scale_y + row[2] * offset_y;
+            }
+            if let Some(matrix) = matrix_from_f64(&matrix) {
+                let _ = write_matrix(context.memory, gpr[3], &matrix);
+            }
             PpcImportAction::ReturnPreserve
         }
         Op::InverseMatrix => {

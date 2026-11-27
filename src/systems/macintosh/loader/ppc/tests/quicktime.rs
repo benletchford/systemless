@@ -7895,3 +7895,60 @@ fn quicktime_pegasus_prime_time_base_and_picture_file_imports_are_bound() {
         );
     }
 }
+
+#[test]
+fn quicktime_scale_matrix_concatenates_about_a_fixed_point() {
+    let mut loaded = movie_toolbox_fixture();
+    let base = PPC_DATA_BASE + 0x4000;
+    call_movie_toolbox(&mut loaded, "SetIdentityMatrix", &[base]);
+    // Start with a translation of (10, 4).
+    loaded.memory.write_u32_be(base + 24, 10 << 16).unwrap();
+    loaded.memory.write_u32_be(base + 28, 4 << 16).unwrap();
+    // Scale by (2, -0.5) around (6, 3).
+    call_movie_toolbox(
+        &mut loaded,
+        "ScaleMatrix",
+        &[base, 2 << 16, 0xffff8000, 6 << 16, 3 << 16],
+    );
+    let expected = [
+        0x20000, 0, 0, 0, 0xffff8000, 0, 0xe0000, 0x28000, 0x40000000,
+    ];
+    for (index, word) in expected.into_iter().enumerate() {
+        assert_eq!(
+            loaded.memory.read_u32_be(base + index as u32 * 4),
+            Some(word)
+        );
+    }
+}
+
+#[test]
+fn quicktime_translate_matrix_preserves_the_perspective_column() {
+    let mut loaded = movie_toolbox_fixture();
+    let base = PPC_DATA_BASE + 0x4000;
+    call_movie_toolbox(&mut loaded, "SetIdentityMatrix", &[base]);
+    loaded.memory.write_u32_be(base + 8, 1 << 28).unwrap();
+    call_movie_toolbox(&mut loaded, "TranslateMatrix", &[base, 2 << 16, 4 << 16]);
+    assert_eq!(loaded.memory.read_u32_be(base), Some(0x18000));
+    assert_eq!(loaded.memory.read_u32_be(base + 4), Some(0x10000));
+    assert_eq!(loaded.memory.read_u32_be(base + 8), Some(1 << 28));
+    assert_eq!(loaded.memory.read_u32_be(base + 24), Some(2 << 16));
+    assert_eq!(loaded.memory.read_u32_be(base + 28), Some(4 << 16));
+}
+
+#[test]
+fn quicktime_get_movie_display_clip_returns_independently_owned_regions() {
+    let mut loaded = movie_toolbox_fixture();
+    let get_clip = |loaded: &mut PpcLoadedApp| {
+        call_movie_toolbox(loaded, "GetMovieDisplayClipRgn", &[PPC_QT_MOVIE])
+    };
+    assert_eq!(get_clip(&mut loaded), 0);
+    assert_eq!(loaded.quicktime.movie_error, PPC_NO_ERR);
+    let clip = vec![0, 10, 0, 2, 0, 3, 0, 9, 0, 11];
+    loaded.quicktime.movie_display_clip = Some(clip.clone());
+    let first = get_clip(&mut loaded);
+    let second = get_clip(&mut loaded);
+    assert_ne!(first, 0);
+    assert_ne!(second, first);
+    assert_eq!(ppc_region_storage(&mut loaded.memory, first), Some(clip.clone()));
+    assert_eq!(ppc_region_storage(&mut loaded.memory, second), Some(clip));
+}
