@@ -27,6 +27,24 @@ pub(crate) const ROUTINE_FLAG_USE_NATIVE_ISA: u16 = 0x0004;
 pub(crate) const ROUTINE_FLAG_DONT_PASS_SELECTOR: u16 = 0x0008;
 pub(crate) const ROUTINE_FLAG_DISPATCHED_DEFAULT: u16 = 0x0010;
 
+/// Whether `first_word` begins 68K code a definition resource (a 'WDEF',
+/// 'CDEF', 'LDEF' and the like) can be entered at: a procedure prologue, or
+/// a jump or JSR stub to the real entry. Some 'CDEF' resources are 16-byte
+/// stubs that begin with a JSR to an RTS before jumping through a code
+/// address the application patches into the resource.
+pub(crate) fn m68k_definition_entry_is_callable(first_word: u16) -> bool {
+    matches!(
+        first_word,
+        0x4E56 // LINK.W A6,#imm
+            | 0x48E7 // MOVEM.L regs,-(SP)
+            | 0x4EF9 // JMP abs.L
+            | 0x4EFA // JMP pc-relative
+            | 0x4EB9 // JSR abs.L
+            | 0x4EBA // JSR pc-relative
+            | 0x6000..=0x60FF // BRA/BRA.S
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GuestIsa {
     M68k,

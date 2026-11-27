@@ -1,6 +1,7 @@
 //! Typed Window Manager dispatch for PowerPC imports.
 
 use super::*;
+use crate::systems::macintosh::window_definition::WindowDefinitionEvent;
 #[path = "dispatch_window_alignment.rs"]
 pub(super) mod alignment;
 use std::collections::VecDeque;
@@ -435,6 +436,13 @@ pub(super) fn dispatch_window_import(
                 toolbox_startup.host_menu_bar_hidden,
             );
             if window != 0 {
+                let draws_frame = ppc_window_is_visible(memory, window);
+                ppc_queue_window_definition(
+                    memory,
+                    toolbox_startup,
+                    window,
+                    WindowDefinitionEvent::Create { draws_frame },
+                );
                 ppc_recalculate_window_vis_regions(
                     process_memory_manager,
                     memory,
@@ -509,6 +517,13 @@ pub(super) fn dispatch_window_import(
                 &mut toolbox_startup.port_palettes,
             );
             if window != 0 {
+                let draws_frame = ppc_window_is_visible(memory, window);
+                ppc_queue_window_definition(
+                    memory,
+                    toolbox_startup,
+                    window,
+                    WindowDefinitionEvent::Create { draws_frame },
+                );
                 ppc_recalculate_window_vis_regions(
                     process_memory_manager,
                     memory,
@@ -826,6 +841,12 @@ pub(super) fn dispatch_window_import(
                     tick_count,
                 );
                 if !was_visible {
+                    ppc_queue_window_definition(
+                        memory,
+                        toolbox_startup,
+                        window,
+                        WindowDefinitionEvent::Reveal,
+                    );
                     ppc_paint_revealed_window_content(memory, gworlds, window_list, handles, window);
                     if ppc_front_visible_process_window(memory, window_list) != Some(window) {
                         ppc_draw_existing_window_frame(
@@ -976,6 +997,12 @@ pub(super) fn dispatch_window_import(
                     input,
                 );
                 if visible && !was_visible {
+                    ppc_queue_window_definition(
+                        memory,
+                        toolbox_startup,
+                        window,
+                        WindowDefinitionEvent::Reveal,
+                    );
                     ppc_paint_revealed_window_content(memory, gworlds, window_list, handles, window);
                     if ppc_front_visible_process_window(memory, window_list) != Some(window) {
                         ppc_draw_existing_window_frame(
@@ -1542,11 +1569,12 @@ pub(super) fn ppc_window_structure_bounds(
         crate::window_manager::standard_window_structure_bounds(content)
     } else if !ppc_window_proc_has_system_content_region(proc_id) {
         // An application WDEF computes its own regions (wCalcRgns, Macintosh
-        // Toolbox Essentials (1992), pp. 4-122--4-123), and Systemless does
-        // not run it or draw its frame. A guessed frame outside the content
-        // would only clip the windows behind it from their own updates, so
-        // the structure is the content. Civilization II draws its frames
-        // inside the content of abutting windows.
+        // Toolbox Essentials (1992), p. 4-123), which replace this one when
+        // the definition runs. Until then, or if it cannot be called, a
+        // guessed frame outside the content would only clip the windows
+        // behind it from their own updates, so the structure is the content.
+        // Civilization II draws its frames inside the content of abutting
+        // windows.
         content
     } else if proc_id == 3 {
         // altDBoxProc: a one-pixel frame around the content plus a two-pixel
@@ -1592,7 +1620,8 @@ pub(super) fn ppc_update_window_manager_regions(
     let (Some(content_rgn), Some(structure_rgn)) = (content_rgn, structure_rgn) else {
         return Some(());
     };
-    let structure = ppc_window_structure_bounds(ppc_window_proc_id(memory, window), content);
+    let structure = ppc_window_structure_for_content(memory, window, content);
+    let previous = ppc_application_window_regions(memory, window);
     ppc_write_rgn_bbox(
         memory,
         content_rgn,
@@ -1601,15 +1630,77 @@ pub(super) fn ppc_update_window_manager_regions(
         content.2,
         content.3,
     )?;
-    ppc_write_rgn_bbox(
-        memory,
-        structure_rgn,
-        structure.0,
-        structure.1,
-        structure.2,
-        structure.3,
-    )?;
+    match previous {
+        // Moving a window offsets the structure region its definition
+        // calculated, keeping its shape.
+        Some((_, old_content))
+            if old_content.2 - old_content.0 == content.2 - content.0
+                && old_content.3 - old_content.1 == content.3 - content.1 =>
+        {
+            if ppc_offset_rgn(
+                memory,
+                structure_rgn,
+                content.1.wrapping_sub(old_content.1),
+                content.0.wrapping_sub(old_content.0),
+            ) != 0
+            {
+                return None;
+            }
+        }
+        _ => ppc_write_rgn_bbox(
+            memory,
+            structure_rgn,
+            structure.0,
+            structure.1,
+            structure.2,
+            structure.3,
+        )?,
+    }
     Some(())
+}
+
+/// The structure and content region bounds of a window whose application
+/// definition calculates its own regions (wCalcRgns, Macintosh Toolbox
+/// Essentials (1992), p. 4-124), when both are non-empty.
+fn ppc_application_window_regions(
+    memory: &mut PpcSectionMem,
+    window: u32,
+) -> Option<((i16, i16, i16, i16), (i16, i16, i16, i16))> {
+    if !crate::systems::macintosh::window_definition::is_application_definition(
+        ppc_window_proc_id(memory, window),
+    ) {
+        return None;
+    }
+    let non_empty = |rect: (i16, i16, i16, i16)| rect.0 < rect.2 && rect.1 < rect.3;
+    let structure = memory
+        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
+        .and_then(|region| ppc_read_rgn_bbox(memory, region))
+        .filter(|rect| non_empty(*rect))?;
+    let content = memory
+        .read_u32_be(window.wrapping_add(PPC_CWINDOW_CONTENT_RGN_OFFSET))
+        .and_then(|region| ppc_read_rgn_bbox(memory, region))
+        .filter(|rect| non_empty(*rect))?;
+    Some((structure, content))
+}
+
+/// The global structure rectangle of `window` with its content at
+/// `content`. A standard definition's frame has fixed geometry. An
+/// application definition calculated its own structure region, so its
+/// margins around the content are kept as the window moves or grows.
+pub(super) fn ppc_window_structure_for_content(
+    memory: &mut PpcSectionMem,
+    window: u32,
+    content: (i16, i16, i16, i16),
+) -> (i16, i16, i16, i16) {
+    if let Some((structure, current)) = ppc_application_window_regions(memory, window) {
+        return (
+            content.0.saturating_sub(current.0.saturating_sub(structure.0)),
+            content.1.saturating_sub(current.1.saturating_sub(structure.1)),
+            content.2.saturating_add(structure.2.saturating_sub(current.2)),
+            content.3.saturating_add(structure.3.saturating_sub(current.3)),
+        );
+    }
+    ppc_window_structure_bounds(ppc_window_proc_id(memory, window), content)
 }
 
 pub(super) struct PpcNewCWindowParameters {
@@ -2500,10 +2591,7 @@ pub(super) fn ppc_window_global_structure_bounds(
     window: u32,
 ) -> Option<(i16, i16, i16, i16)> {
     let content = ppc_window_global_content_bounds(memory, gworlds, window)?;
-    Some(ppc_window_structure_bounds(
-        ppc_window_proc_id(memory, window),
-        content,
-    ))
+    Some(ppc_window_structure_for_content(memory, window, content))
 }
 
 pub(super) fn ppc_union_bounds(
@@ -2874,7 +2962,7 @@ pub(super) fn ppc_restore_window_removal_exposure(
         let Some(content) = ppc_window_global_content_bounds(memory, gworlds, window) else {
             continue;
         };
-        let structure = ppc_window_structure_bounds(ppc_window_proc_id(memory, window), content);
+        let structure = ppc_window_structure_for_content(memory, window, content);
         let intersects = structure.0 < exposed.2
             && exposed.0 < structure.2
             && structure.1 < exposed.3
@@ -2918,9 +3006,9 @@ pub(super) fn ppc_redraw_screen_after_mode_change(
     let host_menu_bar_hidden = toolbox_startup.host_menu_bar_hidden;
     // Full-screen games hide the menu bar before switching and then rely on
     // their own (often custom-WDEF) backdrop windows to black out the
-    // screen. Systemless does not run guest WDEFs, so repainting the desktop
-    // for them would show it through that backdrop (Descent); keep the
-    // cleared screen for applications that already hid the menu bar.
+    // screen. Repainting the desktop for them would show it through that
+    // backdrop (Descent); keep the cleared screen for applications that
+    // already hid the menu bar.
     if host_menu_bar_hidden || memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(0) == 0 {
         return;
     }
@@ -3020,8 +3108,7 @@ pub(super) fn ppc_window_content_covered_by_front_windows(
         let Some(front_content) = ppc_window_global_content_bounds(memory, gworlds, front) else {
             continue;
         };
-        let structure =
-            ppc_window_structure_bounds(ppc_window_proc_id(memory, front), front_content);
+        let structure = ppc_window_structure_for_content(memory, front, front_content);
         let overlap = (
             content.0.max(structure.0),
             content.1.max(structure.1),
@@ -4517,6 +4604,13 @@ pub(super) fn ppc_dispatch_legacy_window(
                 toolbox_startup.host_menu_bar_hidden,
             );
             if window != 0 {
+                let draws_frame = ppc_window_is_visible(memory, window);
+                ppc_queue_window_definition(
+                    memory,
+                    toolbox_startup,
+                    window,
+                    WindowDefinitionEvent::Create { draws_frame },
+                );
                 ppc_recalculate_window_vis_regions(
                     process_memory_manager,
                     memory,
@@ -4770,6 +4864,13 @@ pub(super) fn ppc_dispatch_legacy_window(
                 PPC_NO_ERR
             };
             if window != 0 {
+                let draws_frame = ppc_window_is_visible(memory, window);
+                ppc_queue_window_definition(
+                    memory,
+                    toolbox_startup,
+                    window,
+                    WindowDefinitionEvent::Create { draws_frame },
+                );
                 ppc_recalculate_window_vis_regions(
                     process_memory_manager,
                     memory,
@@ -5854,8 +5955,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                 ppc_i32_to_i16_saturating(i32::from(new_content.2) + dy),
                 ppc_i32_to_i16_saturating(i32::from(new_content.3) + dx),
             );
-            let new_structure =
-                ppc_window_structure_bounds(ppc_window_proc_id(memory, window), new_content);
+            let new_structure = ppc_window_structure_for_content(memory, window, new_content);
             if options & 8 == 0 && new_content != content {
                 let visible = ppc_window_is_visible(memory, window);
                 if ppc_move_window_coordinates(
@@ -7568,7 +7668,7 @@ pub(super) fn ppc_dispatch_drag_window(
         return PpcImportAction::ReturnPreserve;
     }
     let original_structure =
-        ppc_window_structure_bounds(ppc_window_proc_id(memory, call.window), original_content);
+        ppc_window_structure_for_content(memory, call.window, original_content);
     let mut state = PpcDragWindowTrackingState {
         call,
         front_buffer,
@@ -7635,10 +7735,7 @@ pub(super) fn ppc_refresh_grow_window_outline(
         state.original_content.0.saturating_add(height),
         state.original_content.1.saturating_add(width),
     );
-    let outline = ppc_window_structure_bounds(
-        ppc_window_proc_id(memory, state.call.window),
-        proposed_content,
-    );
+    let outline = ppc_window_structure_for_content(memory, state.call.window, proposed_content);
     if !state.saved_pixels.is_empty() && state.outline == outline {
         return;
     }
@@ -7780,8 +7877,9 @@ pub(super) fn ppc_dispatch_grow_window(
         front_buffer,
         original_content,
         size_limits,
-        outline: ppc_window_structure_bounds(
-            ppc_window_proc_id(memory, params.window_ptr()),
+        outline: ppc_window_structure_for_content(
+            memory,
+            params.window_ptr(),
             original_content,
         ),
         saved_pixels: Vec::new().into(),

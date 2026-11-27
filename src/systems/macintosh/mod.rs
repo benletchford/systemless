@@ -58,6 +58,7 @@ pub mod trace;
 pub mod trap;
 pub(crate) mod ui_art;
 pub mod ui_theme;
+pub(crate) mod window_definition;
 pub(crate) mod window_manager;
 
 pub mod session;

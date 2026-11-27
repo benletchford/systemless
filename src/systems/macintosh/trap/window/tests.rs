@@ -1068,7 +1068,7 @@ fn getnewcwindow_visible_custom_wdef_arms_wnew_wcalcrgns_then_wdraw_trampoline()
     assert_eq!(bus.read_long(tramp + 16), window_ptr);
     assert_eq!(
         bus.read_word(tramp + 22),
-        super::super::TrapDispatcher::WDEF_WNEW_MSG as u16
+        crate::systems::macintosh::window_definition::WNEW as u16
     );
     assert_eq!(bus.read_long(tramp + 26), 0);
     assert_eq!(bus.read_long(tramp + 32), wdef_proc);
@@ -1085,7 +1085,7 @@ fn getnewcwindow_visible_custom_wdef_arms_wnew_wcalcrgns_then_wdraw_trampoline()
     assert_eq!(bus.read_long(calc_tramp + 16), window_ptr);
     assert_eq!(
         bus.read_word(calc_tramp + 22),
-        super::super::TrapDispatcher::WDEF_WCALC_RGNS_MSG as u16
+        crate::systems::macintosh::window_definition::WCALC_RGNS as u16
     );
     assert_eq!(bus.read_long(calc_tramp + 26), 0);
     assert_eq!(bus.read_long(calc_tramp + 32), wdef_proc);
@@ -1102,7 +1102,7 @@ fn getnewcwindow_visible_custom_wdef_arms_wnew_wcalcrgns_then_wdraw_trampoline()
     assert_eq!(bus.read_long(draw_tramp + 16), window_ptr);
     assert_eq!(
         bus.read_word(draw_tramp + 22),
-        super::super::TrapDispatcher::WDEF_WDRAW_MSG as u16
+        crate::systems::macintosh::window_definition::WDRAW as u16
     );
     assert_eq!(bus.read_long(draw_tramp + 26), 0);
     assert_eq!(bus.read_long(draw_tramp + 32), wdef_proc);
@@ -4106,9 +4106,7 @@ fn hide_covered_window_does_not_preserve_background_inside_foreground_region_hol
     let (top, left, bottom, right) = disp.window_structure_rect(&bus, front).unwrap();
     let rows = vec![vec![left, 140, 180, right]; (bottom - top) as usize];
     let structure = bus.read_long(front + 114);
-    assert!(super::super::TrapDispatcher::write_region_from_rows(
-        &mut bus, structure, top, &rows
-    ));
+    assert!(disp.write_region_from_rows(&mut bus, structure, top, &rows));
     for y in top..bottom {
         for x in left..right {
             bus.write_byte(
