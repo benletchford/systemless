@@ -748,6 +748,14 @@ pub(super) fn dispatch_window_import(
                 let bring_to_front = params.bring_to_front();
                 let previous_structure = ppc_window_global_structure_bounds(memory, gworlds, window);
                 if ppc_move_window(cpu, memory, gworlds).is_some() {
+                    if was_visible {
+                        ppc_queue_window_definition(
+                            memory,
+                            toolbox_startup,
+                            window,
+                            WindowDefinitionEvent::Move,
+                        );
+                    }
                     if bring_to_front {
                         ppc_reorder_window(gworlds, window_list, window, 0, true);
                     }
@@ -7612,6 +7620,12 @@ pub(super) fn ppc_dispatch_drag_window(
                 as u16 as u32;
             move_cpu.gpr[6] = 1;
             if ppc_move_window(&move_cpu, memory, gworlds).is_some() {
+                ppc_queue_window_definition(
+                    memory,
+                    startup,
+                    call.window,
+                    WindowDefinitionEvent::Move,
+                );
                 let previous_front = ppc_front_visible_process_window(memory, window_list);
                 ppc_reorder_window(gworlds, window_list, call.window, 0, true);
                 ppc_recalculate_window_vis_regions(

@@ -2793,16 +2793,31 @@ fn native_control_executes_original_classic_definition_and_returns_to_caller() {
 #[test]
 fn native_window_runs_its_classic_definition_in_the_window_manager_port() {
     // NewCWindow on a visible window sends wNew, wCalcRgns and wDraw.
-    native_window_definition_case(false);
+    native_window_definition_case(WindowDefinitionCase::Visible);
 }
 
 #[test]
 fn native_show_window_draws_a_hidden_window_through_its_classic_definition() {
     // A hidden window gets wNew; ShowWindow then sends wCalcRgns and wDraw.
-    native_window_definition_case(true);
+    native_window_definition_case(WindowDefinitionCase::ShownLater);
 }
 
-fn native_window_definition_case(show_later: bool) {
+#[test]
+fn native_move_window_redraws_the_frame_through_its_classic_definition() {
+    // Moving a visible window sends wCalcRgns and wDraw again, so the
+    // definition's frame follows the window.
+    native_window_definition_case(WindowDefinitionCase::Moved);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WindowDefinitionCase {
+    Visible,
+    ShownLater,
+    Moved,
+}
+
+fn native_window_definition_case(case: WindowDefinitionCase) {
+    let show_later = case == WindowDefinitionCase::ShownLater;
     use crate::loader::ppc::tests::synthetic_pef_with_import;
     use crate::process_context::ProcessVfsResourceRecord;
 
@@ -2926,8 +2941,15 @@ fn native_window_definition_case(show_later: bool) {
             attrs: 0,
             handle: 0,
         });
-    let mut show = test_ppc_import_binding(1, "InterfaceLib", "ShowWindow");
-    show.dispatcher_target = PpcImportDispatcherTarget::ShowWindow;
+    let mut show = if case == WindowDefinitionCase::Moved {
+        let mut binding = test_ppc_import_binding(1, "InterfaceLib", "MoveWindow");
+        binding.dispatcher_target = PpcImportDispatcherTarget::MoveWindow;
+        binding
+    } else {
+        let mut binding = test_ppc_import_binding(1, "InterfaceLib", "ShowWindow");
+        binding.dispatcher_target = PpcImportDispatcherTarget::ShowWindow;
+        binding
+    };
     show.trap_pc = PPC_IMPORT_TRAP_BASE + 4;
     native.memory.add_region(show.trap_pc, vec![0; 4]);
     let program = SCRATCH + 0x100;
@@ -2936,12 +2958,15 @@ fn native_window_definition_case(show_later: bool) {
         0x3d80_0000 | (RESULT >> 16),
         0x618c_0000 | (RESULT & 0xffff),
         0x906c_0000, // stw r3,0(r12): retain the WindowPtr.
-        if show_later {
-            ppc_test_relative_branch(program + 16, show.trap_pc) | 1
-        } else {
+        0x3880_0046, // li r4,70: MoveWindow's hGlobal
+        0x38a0_0046, // li r5,70: MoveWindow's vGlobal
+        0x38c0_0000, // li r6,0: don't bring it to the front
+        if case == WindowDefinitionCase::Visible {
             0x6000_0000 // nop
+        } else {
+            ppc_test_relative_branch(program + 28, show.trap_pc) | 1
         },
-        ppc_test_relative_branch(program + 20, native.halt_pc),
+        ppc_test_relative_branch(program + 32, native.halt_pc),
     ];
     for (index, word) in words.into_iter().enumerate() {
         native
@@ -2981,11 +3006,16 @@ fn native_window_definition_case(show_later: bool) {
     assert_ne!(window, 0);
     // wNew, then wCalcRgns and wDraw once the window is visible, with the
     // procID's variation code.
-    let log: Vec<_> = (0..4)
+    let log: Vec<_> = (0..6)
         .map(|index| native.memory.read_u16_be(LOG + index * 2).unwrap())
         .collect();
-    assert_eq!(log, [3, 2, 0, 0]);
-    assert_eq!(native.memory.read_u32_be(LOG_PTR), Some(LOG + 6));
+    if case == WindowDefinitionCase::Moved {
+        assert_eq!(log, [3, 2, 0, 2, 0, 0]);
+        assert_eq!(native.memory.read_u32_be(LOG_PTR), Some(LOG + 10));
+    } else {
+        assert_eq!(log, [3, 2, 0, 0, 0, 0]);
+        assert_eq!(native.memory.read_u32_be(LOG_PTR), Some(LOG + 6));
+    }
     assert_eq!(native.memory.read_u16_be(VARIANT), Some(5));
     // The definition draws in the process's Window Manager port: the screen.
     assert_eq!(native.memory.read_u32_be(PORT_SLOT), Some(PPC_MAIN_GWORLD));
@@ -3000,7 +3030,12 @@ fn native_window_definition_case(show_later: bool) {
             .collect();
         words
     };
-    assert_eq!(region(native, 118), [10, 60, 60, 100, 160]);
+    let content = if case == WindowDefinitionCase::Moved {
+        [10, 70, 70, 110, 170]
+    } else {
+        [10, 60, 60, 100, 160]
+    };
+    assert_eq!(region(native, 118), content);
     let structure = region(native, 114);
     assert!(structure[0] > 10, "{structure:?}");
     assert_eq!(structure[1..], [50, 59, 104, 163]);
@@ -3012,8 +3047,14 @@ fn native_window_definition_case(show_later: bool) {
         native.memory.read_u32_be(LENT_BOUNDS),
         native.memory.read_u32_be(pixmap + 6)
     );
-    assert_eq!(native.memory.read_u32_be(LENT_BOUNDS), Some(0xffc4_ffc4));
-    assert_ne!(native.memory.read_u32_be(window + 8), Some(0xffc4_ffc4));
+    // The window's global origin, negated: (-60,-60), or (-70,-70) once moved.
+    let origin = if case == WindowDefinitionCase::Moved {
+        0xffba_ffba
+    } else {
+        0xffc4_ffc4
+    };
+    assert_eq!(native.memory.read_u32_be(LENT_BOUNDS), Some(origin));
+    assert_ne!(native.memory.read_u32_be(window + 8), Some(origin));
     assert!(native.guest_calls().is_empty());
 }
 

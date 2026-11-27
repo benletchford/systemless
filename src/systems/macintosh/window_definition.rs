@@ -55,6 +55,10 @@ pub(crate) enum WindowDefinitionEvent {
     /// ShowWindow or ShowHide revealing a hidden window: its frame is drawn
     /// through its definition (boot3 WindowMgr.a ShowHide, DrawNew).
     Reveal,
+    /// MoveWindow or DragWindow moving a visible window: the definition
+    /// recalculates its regions at the new position and draws its frame
+    /// there.
+    Move,
 }
 
 /// The messages, with their `param` values, the Window Manager sends to a
@@ -65,7 +69,9 @@ pub(crate) fn messages(event: WindowDefinitionEvent) -> &'static [(i16, u32)] {
             &[(WNEW, 0), (WCALC_RGNS, 0), (WDRAW, 0)]
         }
         WindowDefinitionEvent::Create { draws_frame: false } => &[(WNEW, 0)],
-        WindowDefinitionEvent::Reveal => &[(WCALC_RGNS, 0), (WDRAW, 0)],
+        WindowDefinitionEvent::Reveal | WindowDefinitionEvent::Move => {
+            &[(WCALC_RGNS, 0), (WDRAW, 0)]
+        }
     }
 }
 
@@ -139,6 +145,10 @@ mod tests {
         );
         assert_eq!(
             messages(WindowDefinitionEvent::Reveal),
+            &[(WCALC_RGNS, 0), (WDRAW, 0)]
+        );
+        assert_eq!(
+            messages(WindowDefinitionEvent::Move),
             &[(WCALC_RGNS, 0), (WDRAW, 0)]
         );
     }
