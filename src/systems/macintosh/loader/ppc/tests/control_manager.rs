@@ -5401,3 +5401,27 @@ fn native_custom_control_executes_a_powerpc_definition_descriptor() {
     assert_eq!(loaded.memory.read_u32_be(MARKER + 16), Some(2));
     assert!(loaded.guest_calls().is_empty());
 }
+
+#[test]
+fn weak_appearance_window_collapse_query_is_callable() {
+    let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+        b"AppearanceLib",
+        b"IsWindowCollapsable",
+        0x82,
+        &[sm_index_reloc(0x30, 0)],
+    ));
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let vector = loaded.memory.read_u32_be(PPC_DATA_BASE).unwrap();
+    assert_ne!(vector, 0);
+    assert_eq!(vector, loaded.imports[0].address);
+
+    loaded.cpu.pc = loaded.memory.read_u32_be(vector).unwrap();
+    loaded.cpu.gpr[2] = loaded.memory.read_u32_be(vector + 4).unwrap();
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = PPC_DATA_BASE;
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
