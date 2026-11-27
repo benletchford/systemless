@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.129.0](https://github.com/benletchford/systemless/compare/v0.128.1...v0.129.0) (2026-11-27)
+
+
+### Features
+
+* **launcher:** install a selected disc folder on the startup disk ([8dc1ecc](https://github.com/benletchford/systemless/commit/8dc1eccac9c144ff04ccd4cbf379cb9ab647df21))
+
+
+### Bug Fixes
+
+* **macos:** recover Metal presentation failures through software ([7af5dd3](https://github.com/benletchford/systemless/commit/7af5dd39878522c938b6afdd0cb38174fbed155b))
+* **macos:** retain queued frames until Metal supplies a drawable ([358d516](https://github.com/benletchford/systemless/commit/358d5162b2f3799dfc2518fe6ce0a1c36bf66c77))
+* **ppc:** make the Civilization II demo match its 68K twin ([#6718](https://github.com/benletchford/systemless/issues/6718)) ([0cfbd2f](https://github.com/benletchford/systemless/commit/0cfbd2fb11a071c626ad32e11e0ffeffc478954a))
+* **ppc:** restore basic GrafPort patterns ([8d5ec98](https://github.com/benletchford/systemless/commit/8d5ec98c6bffdbfdd5881ae238dd04e07e94a6e0))
+* **presentation:** preserve detail through PowerPC guest text recolours ([83b6787](https://github.com/benletchford/systemless/commit/83b6787b34a76402859ace030a148c24e411b8db))
+* **present:** discard retained text after its last witnesses are overwritten ([9937115](https://github.com/benletchford/systemless/commit/9937115a20fad75e73f21e7e16eb3235b7f000a2))
+
+
+### Performance Improvements
+
+* **ppc:** limit CopyBits occlusion saves to reachable pixels ([abe5c2a](https://github.com/benletchford/systemless/commit/abe5c2a01b4c02447462afe87581f00fbae926c2))
+
 ## [0.128.1](https://github.com/benletchford/systemless/compare/v0.128.0...v0.128.1) (2026-11-25)
 
 
