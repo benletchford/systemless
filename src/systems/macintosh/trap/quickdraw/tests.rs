@@ -13412,7 +13412,7 @@
     }
 
     #[test]
-    fn erase_rect_does_not_add_to_an_open_region() {
+    fn erase_and_invert_rect_leave_an_open_region_empty() {
         // Imaging With QuickDraw (1994), p. 3-87: only lines and framed
         // shapes affect an open region's outline.
         let (mut d, mut cpu, mut bus) = setup_with_port();
@@ -13425,11 +13425,8 @@
         for (i, v) in [10u16, 10, 30, 30].into_iter().enumerate() {
             bus.write_word(rect + i as u32 * 2, v);
         }
-        cpu.write_reg(Register::A7, TEST_SP);
-        bus.write_long(TEST_SP, rect);
-        d.dispatch_quickdraw(true, 0x0A3, &mut cpu, &mut bus)
-            .unwrap()
-            .unwrap();
+        qd_call_long(&mut d, &mut cpu, &mut bus, 0x0A3, rect);
+        qd_call_long(&mut d, &mut cpu, &mut bus, 0x0A4, rect);
         let dst_ptr = bus.alloc(10);
         let dst = bus.alloc(4);
         make_rgn(&mut bus, dst_ptr, dst, 1, 1, 2, 2);
