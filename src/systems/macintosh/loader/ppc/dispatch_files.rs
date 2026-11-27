@@ -283,6 +283,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 writable_refnums,
                 next_file_ref_num,
                 default_dir_id,
+                working_directories,
             ))))
         }
         PpcImportDispatcherTarget::FSpCreateResFile => {

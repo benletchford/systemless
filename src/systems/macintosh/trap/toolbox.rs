@@ -4,6 +4,7 @@ pub(crate) mod graphics_importer;
 #[path = "toolbox/movie_controller_palette.rs"]
 mod movie_controller_palette;
 
+use crate::systems::macintosh::file_manager;
 use crate::cpu::{CpuOps, Register};
 use crate::guest_call::{
     ClassicRetirement, CooperativeThread, ExecutionTaskId, SharedGuestCallStack, ThreadStorage,
@@ -7811,7 +7812,7 @@ impl super::TrapDispatcher {
                 let dir_id = bus.read_long(pb + 48);
                 let filename = Self::read_pb_filename(bus, name_ptr);
                 let permission = bus.read_byte(pb + 27) as i8 as i16;
-                let wants_write = matches!(permission, 2 | 3 | 4);
+                let wants_write = file_manager::permission_requests_write(permission);
                 eprintln!("[TRAP] PBOpenRF(\"{}\")", filename);
 
                 let is_hfs_variant = matches!(
@@ -7876,8 +7877,10 @@ impl super::TrapDispatcher {
                     // data-fork PBOpen path. Classic installers commonly
                     // create a file, open its empty resource fork with
                     // fsCurPerm, then populate it through FSWrite.
-                    if matches!(permission, 0 | 2 | 3 | 4) && !self.vfs_path_is_read_only(&vfs_key)
-                    {
+                    if file_manager::permission_grants_write(
+                        permission,
+                        !self.vfs_path_is_read_only(&vfs_key),
+                    ) {
                         self.write_refnums.insert(refnum);
                     }
                     self.file_positions.insert(refnum, 0);
@@ -15536,7 +15539,7 @@ impl super::TrapDispatcher {
                         let filename = crate::trap::types::read_fsspec_name(bus, spec_ptr);
                         let vref = bus.read_word(spec_ptr) as i16;
                         let dir_id = bus.read_long(spec_ptr + 2);
-                        let wants_write = permission == 2 || permission == 3;
+                        let wants_write = file_manager::permission_requests_write(permission);
                         let Some(vfs_key) = self.vfs_key_for_fsspec(vref, dir_id, &filename) else {
                             record_movie_error(self, -43);
                             bus.write_word(sp + 10, (-43i16) as u16);

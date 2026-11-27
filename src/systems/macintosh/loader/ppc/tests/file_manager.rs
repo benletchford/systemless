@@ -13691,3 +13691,52 @@ fn legacy_create_and_delete_resolve_working_directory_from_sf_reply() {
         .iter()
         .any(|file| file.path == "Odyssey Folder/Wally!"));
 }
+
+#[test]
+fn fs_open_grants_read_write_access_whatever_the_volume_reference() {
+    // FSOpen(fileName, vRefNum, VAR refNum) has no permission parameter: it
+    // opens with fsCurPerm, so FSWrite then succeeds. Its vRefNum names the
+    // volume, not a permission: SimCity 2000 saves through vRefNum -1, whose
+    // low byte read as a permission ($FF) used to open the file read-only.
+    for vref in [0i16, PPC_BOOT_VOLUME_REF_NUM] {
+        let pef = synthetic_pef_with_import(b"FSOpen");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "Disc/New City".to_string(),
+            data: b"city".to_vec().into(),
+            creator: u32::from_be_bytes(*b"SCDH"),
+            file_type: u32::from_be_bytes(*b"MCTY"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        let scratch = PPC_DATA_BASE + 0x1000;
+        let name_ptr = scratch + 16;
+        loaded.memory.add_region(scratch, vec![0; 128]);
+        assert!(ppc_write_pstring_bytes(
+            &mut loaded.memory,
+            name_ptr,
+            format!(
+                "{}:Disc:New City",
+                crate::trap::TrapDispatcher::boot_volume_name()
+            )
+            .as_bytes()
+        ));
+        loaded.cpu.gpr[3] = name_ptr;
+        loaded.cpu.gpr[4] = vref as u16 as u32;
+        loaded.cpu.gpr[5] = scratch;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            loaded.cpu.gpr[3],
+            ppc_i16_result(PPC_NO_ERR),
+            "vRefNum {vref}"
+        );
+        let ref_num = loaded.memory.read_u16_be(scratch).unwrap();
+        assert!(
+            loaded.writable_refnums.contains(&ref_num),
+            "vRefNum {vref} must not open the file read-only"
+        );
+    }
+}
