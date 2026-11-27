@@ -2545,7 +2545,9 @@ fn test_toolbox_showcase() {
     let page_save_dialog_sample = screen_rgb(&mut runner, 227, 221);
     // Sample persistent page/dialog contrast outside font-dependent ink.
     let legacy_get_sample_point = if powerpc { (160, 10) } else { (50, 10) };
-    let legacy_save_sample_point = if powerpc { (71, 200) } else { (227, 221) };
+    // The legacy PPC dialog starts at (0, 0). Its right border stays black
+    // throughout tracking, including when the filename selection blinks.
+    let legacy_save_sample_point = if powerpc { (100, 360) } else { (227, 221) };
     let page_legacy_get_sample = screen_rgb(
         &mut runner,
         legacy_get_sample_point.0,

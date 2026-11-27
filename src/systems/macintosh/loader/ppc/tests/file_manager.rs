@@ -3722,6 +3722,42 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn standard_put_file_lists_the_resource_only_file_once_while_its_fork_is_open() {
+        let pef = synthetic_pef_with_import(b"StandardPutFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let path = "Showcase";
+        loaded.push_vfs_resource_file(PpcVfsResourceFileRecord {
+            path: path.to_string(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            resource_len: 0,
+            raw_data: None,
+            map_attrs: 0,
+            dirty: false,
+        });
+        let backing = format!("{PPC_OPEN_RESOURCE_FORK_PREFIX}{path}");
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: backing.clone(),
+            data: Vec::new().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        start_put_dialog_with_saves_folder(&mut loaded);
+        put_dialog_command_key(&mut loaded, 0x02, b'd');
+        let entries = &loaded
+            .toolbox_startup
+            .standard_file_put_tracking
+            .as_ref()
+            .unwrap()
+            .entries;
+        assert_eq!(entries.iter().filter(|entry| entry.path == path).count(), 1);
+        assert!(!entries.iter().any(|entry| entry.path == backing));
+    }
+
+    #[test]
     fn standard_put_file_saves_into_the_folder_opened_from_its_list() {
         // The put dialog browses folders like the get dialog; the reply names
         // the folder shown when Save is clicked. Inside Macintosh: Files
