@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.129.1](https://github.com/benletchford/systemless/compare/v0.129.0...v0.129.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **ppc:** keep each colour port's pen pattern in its own PixPat, as 68K does ([#6760](https://github.com/benletchford/systemless/issues/6760)) ([5f27078](https://github.com/benletchford/systemless/commit/5f27078f636338880794252527dc6de0693782ca))
+* **ppc:** restore standard file dialog borders and hide backing files ([#6765](https://github.com/benletchford/systemless/issues/6765)) ([91cce2c](https://github.com/benletchford/systemless/commit/91cce2c6dd3cdc1af13fff588a980e477e436a81))
+* **quickdraw:** run 68K and PowerPC EraseRect through one shared routine ([#6762](https://github.com/benletchford/systemless/issues/6762)) ([67a53e7](https://github.com/benletchford/systemless/commit/67a53e7330f80b5a133ae7d1c5051341ccc62ad7))
+* **textedit:** share caret rules and erase before PowerPC redraws ([#6767](https://github.com/benletchford/systemless/issues/6767)) ([3e703da](https://github.com/benletchford/systemless/commit/3e703da3012cf87feafd85691fdbd3ed5ec2a0e5))
+
+
+### Code Refactoring
+
+* **quickdraw:** read PixPat records through one shared parser on 68K and PowerPC ([#6763](https://github.com/benletchford/systemless/issues/6763)) ([56f0677](https://github.com/benletchford/systemless/commit/56f06770971d8e061696bd3cf5512a8c25dcd533))
+
 ## [0.129.0](https://github.com/benletchford/systemless/compare/v0.128.1...v0.129.0) (2026-11-27)
 
 
