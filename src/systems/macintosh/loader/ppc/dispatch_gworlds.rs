@@ -325,7 +325,8 @@ pub(super) fn dispatch_gworld_import(
                             == Some(*heap_cursor))
                         .then_some(record.base_addr)
                     });
-                for handle in [ctable_handle, owned_regions[0], owned_regions[1]] {
+                let pen_pattern = toolbox_startup.quickdraw_pen_pixpats.remove(&port).unwrap_or(0);
+                for handle in [ctable_handle, owned_regions[0], owned_regions[1], pen_pattern] {
                     if handle == 0 || handle == PPC_MAIN_CTABLE_HANDLE {
                         continue;
                     }
@@ -596,6 +597,12 @@ pub(super) fn dispatch_gworld_import(
                 toolbox_startup.indexed_screen_ctables.remove(&pixmap_handle);
                 quickdraw_fore_indices.remove(&port);
                 toolbox_startup.port_palettes.remove(&port);
+                if let Some(handle) = toolbox_startup.quickdraw_pen_pixpats.remove(&port) {
+                    let _ = ppc_dispose_process_native_handle(
+                        process_memory_manager, memory, heap_cursor, heap_limit, last_mem_error,
+                        handles, handle,
+                    );
+                }
             }
             quickdraw_op_colors.remove_quickdraw_op_color(port);
             quickdraw_hilite_colors.remove_quickdraw_hilite_color(port);

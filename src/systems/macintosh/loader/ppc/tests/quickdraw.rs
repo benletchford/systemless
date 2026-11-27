@@ -8736,6 +8736,24 @@ fn pen_patterns_reuse_the_ports_own_pixpat_and_leave_a_callers_alone() {
 }
 
 #[test]
+fn close_cport_releases_its_owned_pen_pattern() {
+    let (mut loaded, _, state, caller) = color_port_pen_state_fixture();
+    let port = PPC_DATA_BASE + 0x2000;
+    loaded.memory.add_region(port, vec![0; 256]);
+    loaded.cpu.gpr[3] = port;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::OpenCPort);
+    run_pen_pat(&mut loaded, state);
+    let owned = loaded.memory.read_u32_be(port + 58).unwrap();
+    assert_ne!(owned, caller);
+    assert_ne!(owned, 0);
+    loaded.cpu.gpr[3] = port;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CloseCPort);
+    assert_eq!(loaded.memory.read_u32_be(owned), Some(0));
+    assert!(!loaded.toolbox_startup.quickdraw_pen_pixpats.contains_key(&port));
+    assert_ne!(loaded.memory.read_u32_be(caller), Some(0));
+}
+
+#[test]
 fn paint_rect_in_a_basic_port_uses_that_ports_pen_pattern() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PaintRect")).unwrap();
     let scratch = PPC_DATA_BASE + 0x1000;

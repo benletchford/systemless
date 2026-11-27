@@ -181,7 +181,6 @@ pub(crate) fn ppc_install_port_pen_pattern(
         handle => memory.read_u32_be(handle).unwrap_or(0),
     };
     if record == 0 {
-        let _ = memory.write_u32_be(field, 0);
         return;
     }
     let _ = memory.write_u16_be(record, 0);

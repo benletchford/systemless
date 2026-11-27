@@ -919,6 +919,7 @@ fn ppc_dispose_handle(
     if !disposed {
         return;
     }
+    toolbox_startup.quickdraw_pen_pixpats.retain(|_, owned| *owned != handle);
     handles.retain(|record| record.handle != handle);
     toolbox_startup
         .indexed_screen_ctables

@@ -2563,6 +2563,7 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
             // DisposePixPat releases the PixPat's owned handles, including
             // the PixMap's color table. Imaging With QuickDraw (1994), p. 4-91.
             let pat = cpu.gpr[3];
+            toolbox_startup.quickdraw_pen_pixpats.retain(|_, owned| *owned != pat);
             if let Some(record) = (pat != 0)
                 .then(|| memory.read_u32_be(pat))
                 .flatten()
