@@ -69,31 +69,31 @@ pub(crate) fn compute_oval_spans(width: i16, height: i16) -> Vec<(i16, i16)> {
 }
 
 pub(crate) fn compute_rrect_spans(r: &Rect, ow: i16, oh: i16) -> Vec<(i16, i16)> {
-    let width = r.right - r.left;
-    let height = r.bottom - r.top;
+    let width = i32::from(r.right) - i32::from(r.left);
+    let height = i32::from(r.bottom) - i32::from(r.top);
     if width <= 0 || height <= 0 {
         return vec![];
     }
 
-    let ow = ow.min(width).max(0);
-    let oh = oh.min(height).max(0);
+    let ow = i32::from(ow).clamp(0, width);
+    let oh = i32::from(oh).clamp(0, height);
 
     if oh < 1 || ow < 1 {
         return vec![(r.left, r.right); height as usize];
     }
 
-    let corner_spans = compute_oval_spans(ow, oh);
+    let corner_spans = compute_oval_spans(ow as i16, oh as i16);
     let mut spans = Vec::new();
 
     let mid_y = oh / 2;
     let insert_y = height - oh;
-    let insert_x = width - ow;
+    let corner_width = ow as i16;
 
     // Top curves
     for y in 0..mid_y {
         if (y as usize) < corner_spans.len() {
             let (l_rel, r_rel) = corner_spans[y as usize];
-            spans.push((r.left + l_rel, r.left + r_rel + insert_x));
+            spans.push((r.left + l_rel, r.right - (corner_width - r_rel)));
         }
     }
 
@@ -101,7 +101,7 @@ pub(crate) fn compute_rrect_spans(r: &Rect, ow: i16, oh: i16) -> Vec<(i16, i16)>
     for _ in 0..insert_y {
         if (mid_y as usize) < corner_spans.len() {
             let (l_rel, r_rel) = corner_spans[mid_y as usize];
-            spans.push((r.left + l_rel, r.left + r_rel + insert_x));
+            spans.push((r.left + l_rel, r.right - (corner_width - r_rel)));
         } else {
             spans.push((r.left, r.right));
         }
@@ -111,7 +111,7 @@ pub(crate) fn compute_rrect_spans(r: &Rect, ow: i16, oh: i16) -> Vec<(i16, i16)>
     for y in mid_y..oh {
         if (y as usize) < corner_spans.len() {
             let (l_rel, r_rel) = corner_spans[y as usize];
-            spans.push((r.left + l_rel, r.left + r_rel + insert_x));
+            spans.push((r.left + l_rel, r.right - (corner_width - r_rel)));
         }
     }
 

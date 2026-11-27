@@ -200,3 +200,25 @@ fn rrect_spans_match_reference_for_large_rects() {
         );
     }
 }
+
+#[test]
+fn round_rect_spans_handle_signed_coordinate_extremes() {
+    let wrapped = Rect {
+        top: i16::MAX,
+        left: 232,
+        bottom: -32743,
+        right: 320,
+    };
+    assert!(compute_rrect_spans(&wrapped, 16, 16).is_empty());
+
+    let large = Rect {
+        top: -20000,
+        left: -25000,
+        bottom: 20000,
+        right: 25000,
+    };
+    let spans = compute_rrect_spans(&large, 16, 16);
+    assert_eq!(spans.len(), 40000);
+    assert_eq!(spans[20000], (large.left, large.right));
+    assert_eq!(spans.first(), spans.last());
+}
