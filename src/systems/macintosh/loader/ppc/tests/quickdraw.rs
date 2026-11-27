@@ -1865,8 +1865,6 @@ fn hle_import_runner_round_trips_quickdraw_pen_state() {
     );
 }
 
-/// A colour port with live pnPixPat and fillPixPat handles, a PixPat whose
-/// pat1Data is `0x33`, and an 18-byte PenState buffer.
 fn run_pen_pat(loaded: &mut PpcLoadedApp, pattern_ptr: u32) {
     loaded.cpu.gpr[3] = pattern_ptr;
     run_test_import(
@@ -2042,6 +2040,8 @@ fn paint_rect_in_a_basic_port_uses_that_ports_pen_pattern() {
     assert_eq!(at(&mut loaded, 1, 1), paper);
 }
 
+/// A colour port with live pnPixPat and fillPixPat handles, a PixPat whose
+/// pat1Data is `0x33`, and an 18-byte PenState buffer.
 fn color_port_pen_state_fixture() -> (PpcLoadedApp, u32, u32, u32) {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetPenState")).unwrap();
     let port = PPC_MAIN_GWORLD;
