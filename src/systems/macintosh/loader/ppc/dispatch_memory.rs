@@ -562,6 +562,17 @@ pub(super) fn dispatch_memory_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::NewEmptyHandle => {
+            let handle = process_memory_manager.new_empty_native_handle(memory);
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            ppc_apply_process_native_handle(process_memory_manager, handles, handle);
+            Some(PpcImportAction::Return(handle))
+        }
         PpcImportDispatcherTarget::EmptyHandle => {
             let handle = cpu.gpr[3];
             *last_mem_error =

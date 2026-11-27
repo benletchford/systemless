@@ -629,6 +629,50 @@ pub(super) fn dispatch_window_import(
             let aw_ctable_ptr = cpu.gpr[4];
             let can_write = aw_ctable_ptr == 0
                 || ppc_memory_can_write_bytes(memory, aw_ctable_ptr, 4);
+            // A NIL window requests the Window Manager’s default AuxWinRec.
+            if window_ptr == 0 && aw_ctable_ptr != 0 && can_write {
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                if toolbox_startup.default_aux_window_handle == 0 {
+                    let color_table = allocator.allocate_handle_with_bytes(
+                        memory,
+                        heap_cursor,
+                        last_mem_error,
+                        handles,
+                        &TrapDispatcher::system_wctb_default_body(),
+                    );
+                    if color_table != 0 {
+                        let mut record = [0; 28];
+                        record[8..12].copy_from_slice(&color_table.to_be_bytes());
+                        let aux_handle = allocator.allocate_handle_with_bytes(
+                            memory,
+                            heap_cursor,
+                            last_mem_error,
+                            handles,
+                            &record,
+                        );
+                        if aux_handle == 0 {
+                            let allocation_error = *last_mem_error;
+                            allocator.dispose_handle(
+                                memory,
+                                heap_cursor,
+                                heap_limit,
+                                last_mem_error,
+                                handles,
+                                color_table,
+                            );
+                            *last_mem_error = allocation_error;
+                        }
+                        toolbox_startup.default_aux_window_handle = aux_handle;
+                    }
+                }
+                let _ = memory.write_u32_be(
+                    aw_ctable_ptr,
+                    toolbox_startup.default_aux_window_handle,
+                );
+                return Some(PpcImportAction::Return(0));
+            }
             if let Ok(params) = crate::window_manager::evaluate_get_aux_win_parameters(
                 window_ptr,
                 aw_ctable_ptr,
@@ -1568,13 +1612,19 @@ pub(super) fn ppc_window_structure_bounds(
     }
 }
 
+// Built-in WDEF chrome is drawn by the Window Manager. Direct guest calls
+// use the same 68K Pascal shim as the classic adapter, followed by the procID
+// used by the native Window Manager to select the frame style.
+const PPC_SYSTEM_WDEF_SHIM: [u8; 10] = [0x20, 0x5F, 0xDE, 0xFC, 0, 12, 0x42, 0x97, 0x4E, 0xD0];
+
 pub(super) fn ppc_window_proc_id(memory: &mut PpcSectionMem, window: u32) -> i16 {
     memory
         .read_u32_be(window.wrapping_add(PPC_CWINDOW_DEF_PROC_OFFSET))
         .filter(|handle| *handle != 0)
         .and_then(|handle| memory.read_u32_be(handle))
         .filter(|data| *data != 0)
-        .and_then(|data| memory.read_u16_be(data))
+        .and_then(|data| data.checked_add(PPC_SYSTEM_WDEF_SHIM.len() as u32))
+        .and_then(|proc_id| memory.read_u16_be(proc_id))
         .unwrap_or(0) as i16
 }
 
@@ -1997,15 +2047,16 @@ pub(super) fn ppc_new_cwindow_with_storage(
         last_mem_error,
         handles,
     );
-    let def_proc = ppc_allocator_view_allocate_handle(
+    let mut def_proc_bytes = PPC_SYSTEM_WDEF_SHIM.to_vec();
+    def_proc_bytes.extend_from_slice(&proc_id.to_be_bytes());
+    let def_proc = ppc_allocator_view_allocate_handle_with_bytes(
         allocator.as_deref_mut(),
         memory,
         heap_cursor,
         heap_limit,
         last_mem_error,
         handles,
-        4,
-        true,
+        &def_proc_bytes,
     );
     if pixmap == 0
         || pixmap_handle == 0
@@ -2032,14 +2083,10 @@ pub(super) fn ppc_new_cwindow_with_storage(
     let pixel_bottom = ppc_i32_to_i16_saturating(i32::from(screen_bottom) - i32::from(top));
     let pixel_right = ppc_i32_to_i16_saturating(i32::from(screen_right) - i32::from(left));
     let structure = ppc_window_structure_bounds(proc_id, (top, left, bottom, right));
-    let def_proc_data = memory.read_u32_be(def_proc).filter(|ptr| *ptr != 0);
 
     if memory
         .write_bytes(port, &vec![0; record_size as usize])
         .is_none()
-        || def_proc_data
-            .and_then(|data| memory.write_u16_be(data, proc_id as u16))
-            .is_none()
         || memory.write_u32_be(pixmap_handle, pixmap).is_none()
         || ppc_write_pixmap(
             memory,

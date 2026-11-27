@@ -1707,6 +1707,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::HoldMemory
         | PpcImportDispatcherTarget::UnholdMemory
         | PpcImportDispatcherTarget::DisposeHandle
+        | PpcImportDispatcherTarget::NewEmptyHandle
         | PpcImportDispatcherTarget::EmptyHandle
         | PpcImportDispatcherTarget::ReallocateHandle
         | PpcImportDispatcherTarget::GetHandleSize

@@ -47,6 +47,7 @@ pub enum PpcImportDispatcherTarget {
     HoldMemory,
     UnholdMemory,
     DisposeHandle,
+    NewEmptyHandle,
     EmptyHandle,
     ReallocateHandle,
     GetHandleSize,
@@ -3189,6 +3190,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "HoldMemory") => PpcImportDispatcherTarget::HoldMemory,
         ("InterfaceLib", "UnholdMemory") => PpcImportDispatcherTarget::UnholdMemory,
         ("InterfaceLib", "DisposeHandle") => PpcImportDispatcherTarget::DisposeHandle,
+        ("InterfaceLib", "NewEmptyHandle") => PpcImportDispatcherTarget::NewEmptyHandle,
         ("InterfaceLib", "EmptyHandle") => PpcImportDispatcherTarget::EmptyHandle,
         ("InterfaceLib", "ReallocateHandle") => PpcImportDispatcherTarget::ReallocateHandle,
         // The uncached variants change hardware cache policy, not the byte
