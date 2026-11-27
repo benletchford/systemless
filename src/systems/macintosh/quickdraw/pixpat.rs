@@ -94,18 +94,18 @@ pub(crate) fn compiled_image<M: GuestProcedureMemory + ?Sized>(
         return None;
     }
     let (row_bytes, top, left, bottom, right, pixel_size, table_offset) =
-        compiled_map_fields(memory, record + pat_map, valid)?;
+        compiled_map_fields(memory, record.checked_add(pat_map)?, valid)?;
     Some(PixPatImage {
         form: PixPatForm::Compiled,
         row_bytes,
         width: i32::from(right) - i32::from(left),
         height: i32::from(bottom) - i32::from(top),
         pixel_size,
-        data_ptr: record + pat_data,
+        data_ptr: record.checked_add(pat_data)?,
         table_ptr: if table_offset == 0 {
             0
         } else {
-            record + table_offset
+            record.checked_add(table_offset)?
         },
     })
 }
@@ -120,13 +120,13 @@ pub(crate) fn live_image<M: GuestProcedureMemory + ?Sized>(
     let map = memory
         .procedure_read_u32(map_handle)
         .filter(|map| *map != 0)?;
-    let row_bytes = u32::from(memory.procedure_read_u16(map + 4)? & 0x3fff);
-    let top = memory.procedure_read_u16(map + 6)? as i16;
-    let left = memory.procedure_read_u16(map + 8)? as i16;
-    let bottom = memory.procedure_read_u16(map + 10)? as i16;
-    let right = memory.procedure_read_u16(map + 12)? as i16;
-    let pixel_size = memory.procedure_read_u16(map + 32)?;
-    let table_handle = memory.procedure_read_u32(map + 42)?;
+    let row_bytes = u32::from(memory.procedure_read_u16(map.checked_add(4)?)? & 0x3fff);
+    let top = memory.procedure_read_u16(map.checked_add(6)?)? as i16;
+    let left = memory.procedure_read_u16(map.checked_add(8)?)? as i16;
+    let bottom = memory.procedure_read_u16(map.checked_add(10)?)? as i16;
+    let right = memory.procedure_read_u16(map.checked_add(12)?)? as i16;
+    let pixel_size = memory.procedure_read_u16(map.checked_add(32)?)?;
+    let table_handle = memory.procedure_read_u32(map.checked_add(42)?)?;
     let data_handle = memory.procedure_read_u32(record.wrapping_add(6))?;
     let data_ptr = memory.procedure_read_u32(data_handle)?;
     let table_ptr = match table_handle {
@@ -256,6 +256,14 @@ mod tests {
         let mut m = compiled(0);
         m.long(0x102, 0x2000);
         assert_eq!(compiled_image(&mut m, 0x100, any_indexed), None);
+    }
+
+    #[test]
+    fn live_records_reject_out_of_range_map_fields() {
+        let mut m = Bytes(vec![0; 0x400]);
+        m.long(0x102, 0x200);
+        m.long(0x200, u32::MAX);
+        assert_eq!(live_image(&mut m, 0x100), None);
     }
 
     #[test]
