@@ -220,3 +220,133 @@ mod tests {
         assert!(ppc_read_ctable_clut(&mut ppc_mem, handle, &base_clut).is_none());
     }
 }
+
+/// The nearest entry to `rgb` among the first `entry_count` entries of
+/// `clut`, as an inverse table would choose it.
+///
+/// QuickDraw's inverse tables reserve exact white and black for the first and
+/// last entries when those entries are white and black, rather than returning
+/// an arbitrary duplicate colour-cube entry. During fade-to-black steps entry
+/// 0 can temporarily equal black too; canonical black stays pinned to the last
+/// entry in that collapsed case. Imaging With QuickDraw (1994), p. 4-82;
+/// references/executor/src/quickdraw/qColorMgr.cpp (MakeITable).
+pub(crate) fn nearest_color_index(clut: &[[u16; 3]; 256], rgb: [u16; 3], entry_count: usize) -> u8 {
+    let entry_count = entry_count.clamp(1, 256);
+    let terminal_index = entry_count - 1;
+    if rgb == [0, 0, 0] && clut[terminal_index] == [0, 0, 0] {
+        return terminal_index as u8;
+    }
+    if rgb == [0xFFFF, 0xFFFF, 0xFFFF] && clut[0] == [0xFFFF, 0xFFFF, 0xFFFF] {
+        return 0;
+    }
+    if rgb == clut[terminal_index] {
+        return terminal_index as u8;
+    }
+    if rgb == clut[0] {
+        return 0;
+    }
+    if let Some(index) = clut[..entry_count].iter().position(|entry| *entry == rgb) {
+        return index as u8;
+    }
+    let mut best_index = 0u8;
+    let mut best_distance = u64::MAX;
+    for (index, entry) in clut[..entry_count].iter().enumerate() {
+        let dr = i64::from(entry[0]) - i64::from(rgb[0]);
+        let dg = i64::from(entry[1]) - i64::from(rgb[1]);
+        let db = i64::from(entry[2]) - i64::from(rgb[2]);
+        let distance = (dr * dr + dg * dg + db * db) as u64;
+        if distance < best_distance {
+            best_distance = distance;
+            best_index = index as u8;
+        }
+    }
+    best_index
+}
+
+/// The parts of a pixel map that tell whether a port draws on the screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PixelMapLayout {
+    pub(crate) base: u32,
+    pub(crate) row_bytes: u32,
+    pub(crate) pixel_size: u16,
+}
+
+/// The colour table that resolves RGB colours to a port's pixel values.
+///
+/// RGBForeColor and RGBBackColor place "the pixel value most closely
+/// matching that color" in the port (Imaging With QuickDraw (1994), p. 4-70),
+/// matched against the current device. While an offscreen graphics world is
+/// current, that is the world's own GDevice, with the world's colour table
+/// and inverse table (pp. 6-19--6-20 and 6-29). Its pixel values mean
+/// whatever its own table says, not what the screen's says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PortColorTable {
+    /// An 8-bit port on the screen: the screen GDevice's inverse table, which
+    /// follows its logical colour table rather than the animated video DAC.
+    ScreenInverseTable,
+    /// Another port on the screen: the screen's colour table.
+    Screen,
+    /// An offscreen port: its own pixel map's colour table.
+    Own,
+}
+
+/// Which colour table resolves RGB colours for a port whose pixel map is
+/// `port`, given the screen's.
+pub(crate) fn port_color_table(port: PixelMapLayout, screen: PixelMapLayout) -> PortColorTable {
+    if port != screen {
+        PortColorTable::Own
+    } else if port.pixel_size == 8 {
+        PortColorTable::ScreenInverseTable
+    } else {
+        PortColorTable::Screen
+    }
+}
+
+#[cfg(test)]
+mod port_color_tests {
+    use super::*;
+
+    #[test]
+    fn nearest_color_keeps_white_and_black_on_the_table_ends() {
+        let mut clut = [[0x8000u16; 3]; 256];
+        clut[0] = [0xFFFF; 3];
+        clut[255] = [0; 3];
+        clut[7] = [0; 3]; // a duplicate black
+        clut[9] = [0, 0, 0x7FFF];
+        assert_eq!(nearest_color_index(&clut, [0; 3], 256), 255);
+        assert_eq!(nearest_color_index(&clut, [0xFFFF; 3], 256), 0);
+        assert_eq!(nearest_color_index(&clut, [0, 0, 0x7FFF], 256), 9);
+        assert_eq!(nearest_color_index(&clut, [0, 0, 0x7000], 256), 9);
+        // A 4-bit table's last entry is 15.
+        clut[15] = [0; 3];
+        assert_eq!(nearest_color_index(&clut, [0; 3], 16), 15);
+        // When a fade leaves both ends white, white stays on entry 0.
+        clut[255] = [0xFFFF; 3];
+        assert_eq!(nearest_color_index(&clut, [0xFFFF; 3], 256), 0);
+    }
+
+    #[test]
+    fn only_ports_drawing_on_the_screen_use_its_table() {
+        let screen = PixelMapLayout {
+            base: 0x2a0_0000,
+            row_bytes: 816,
+            pixel_size: 8,
+        };
+        assert_eq!(
+            port_color_table(screen, screen),
+            PortColorTable::ScreenInverseTable
+        );
+        let offscreen = PixelMapLayout {
+            base: 0x314_6df0,
+            row_bytes: 160,
+            pixel_size: 8,
+        };
+        assert_eq!(port_color_table(offscreen, screen), PortColorTable::Own);
+        let deep = PixelMapLayout {
+            pixel_size: 16,
+            row_bytes: 1600,
+            ..screen
+        };
+        assert_eq!(port_color_table(deep, deep), PortColorTable::Screen);
+    }
+}

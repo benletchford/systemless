@@ -3203,3 +3203,84 @@ fn hot_quickdraw_and_gworld_imports_skip_handle_snapshots_except_when_recording_
     assert_eq!(snapshots(), after_open + 1);
     run_test_import(&mut loaded, PpcImportDispatcherTarget::ClosePoly);
 }
+
+#[test]
+fn rgb_colours_resolve_through_an_offscreen_worlds_own_colour_table() {
+    // RGBForeColor and RGBBackColor store "the pixel value most closely
+    // matching that color" (Imaging With QuickDraw (1994), p. 4-70), matched
+    // against the offscreen world's own colour table while it's current
+    // (pp. 6-19--6-20, 6-29), not the screen's.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewGWorld")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let table = scratch + 0x100;
+    loaded
+        .memory
+        .add_region(scratch, vec![0; 0x100 + 8 + 256 * 8]);
+    ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 4, 4).unwrap();
+    let dark_blue = [0u16, 0, 0x7fff];
+    // ctSeed, ctFlags (an image table), ctSize, then value/red/green/blue.
+    loaded.memory.write_u32_be(table, 9999).unwrap();
+    loaded.memory.write_u16_be(table + 6, 255).unwrap();
+    for index in 0..256u32 {
+        let rgb = match index {
+            37 => dark_blue,
+            240 => [0, 0, 0],
+            _ => [0x8000; 3],
+        };
+        let entry = table + 8 + index * 8;
+        loaded.memory.write_u16_be(entry, index as u16).unwrap();
+        for (channel, value) in rgb.into_iter().enumerate() {
+            loaded
+                .memory
+                .write_u16_be(entry + 2 + channel as u32 * 2, value)
+                .unwrap();
+        }
+    }
+    loaded.memory.write_u32_be(scratch + 0x40, table).unwrap();
+    let screen_match = TrapDispatcher::screen_itable_index(&loaded.color_manager_clut, dark_blue);
+    assert_ne!(screen_match, 37);
+
+    loaded.cpu.gpr[3] = scratch + 8;
+    loaded.cpu.gpr[4] = 8;
+    loaded.cpu.gpr[5] = scratch;
+    loaded.cpu.gpr[6] = scratch + 0x40;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGWorld);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let port = loaded.memory.read_u32_be(scratch + 8).unwrap();
+    let world = *loaded
+        .gworlds
+        .iter()
+        .find(|world| world.port == port)
+        .unwrap();
+    assert_eq!(world.depth, 8);
+    loaded.cpu.gpr[3] = port;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetGWorld);
+
+    let colour = scratch + 0x48;
+    ppc_write_rgb_color(
+        &mut loaded.memory,
+        colour,
+        PpcRgbColor {
+            red: dark_blue[0],
+            green: dark_blue[1],
+            blue: dark_blue[2],
+        },
+    )
+    .unwrap();
+    loaded.cpu.gpr[3] = colour;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::RGBForeColor);
+    assert_eq!(loaded.quickdraw_fore_indices.get(&port), Some(&37));
+    loaded.cpu.gpr[3] = scratch;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PaintRect);
+    assert_eq!(loaded.memory.read_u8(world.base_addr), Some(37));
+
+    loaded.cpu.gpr[3] = colour;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::RGBBackColor);
+    assert_eq!(
+        loaded.toolbox_startup.quickdraw_back_indices.get(&port),
+        Some(&37)
+    );
+}
