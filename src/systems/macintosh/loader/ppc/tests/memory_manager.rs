@@ -5575,3 +5575,27 @@ fn port_query_outputs_reconcile_window_links_before_guest_execution_resumes() {
         assert_eq!(app.cpu.gpr[10], back, "{name:?} output in r{output_register}");
     }
 }
+
+#[test]
+fn new_empty_handle_allocates_a_nil_master_pointer_that_can_be_reallocated() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewEmptyHandle")).unwrap();
+    let target = loaded.imports[0].dispatcher_target;
+    assert_eq!(target, PpcImportDispatcherTarget::NewEmptyHandle);
+    let heap_before = loaded.heap_cursor();
+    loaded.cpu.gpr[3] = u32::MAX;
+    loaded.set_last_mem_error(PPC_MEM_FULL_ERR);
+
+    run_test_import(&mut loaded, target);
+
+    let handle = loaded.cpu.gpr[3];
+    assert_ne!(handle, 0);
+    assert_eq!(loaded.memory.read_u32_be(handle), Some(0));
+    assert_eq!(loaded.heap_cursor(), heap_before + 16);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = 16;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ReallocateHandle);
+    assert_ne!(loaded.memory.read_u32_be(handle).unwrap(), 0);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+}

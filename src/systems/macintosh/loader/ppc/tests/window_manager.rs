@@ -884,7 +884,7 @@ fn hle_import_runner_handles_new_cwindow_allocation() {
         .read_u32_be(window + PPC_CWINDOW_DEF_PROC_OFFSET)
         .unwrap();
     let def_proc = loaded.memory.read_u32_be(def_proc_handle).unwrap();
-    assert_eq!(loaded.memory.read_u16_be(def_proc), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(def_proc), Some(0x205F));
     let title_handle = loaded
         .memory
         .read_u32_be(window + PPC_CWINDOW_TITLE_HANDLE_OFFSET)
@@ -12079,4 +12079,34 @@ fn window_frame_under_the_menu_bar_leaves_the_menu_bar_pixels() {
         ppc_quickdraw_read_pixel(&mut loaded.memory, front, (99, 22)),
         ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut),
     );
+}
+
+#[test]
+fn get_aux_win_with_nil_window_returns_the_default_auxiliary_record() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetAuxWin")).unwrap();
+    let out = PPC_DATA_BASE + 0x1300;
+    loaded.memory.add_region(out, vec![0xAA; 4]);
+
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = out;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetAuxWin);
+
+    // FALSE identifies the default record. The output is still a valid handle.
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let handle = loaded.memory.read_u32_be(out).unwrap();
+    assert_ne!(handle, 0);
+    let record = loaded.memory.read_u32_be(handle).unwrap();
+    assert_ne!(record, 0);
+    assert_eq!(loaded.memory.read_u32_be(record + 4), Some(0));
+    let color_table = loaded.memory.read_u32_be(record + 8).unwrap();
+    assert_ne!(color_table, 0);
+    let table = loaded.memory.read_u32_be(color_table).unwrap();
+    assert_eq!(loaded.memory.read_u16_be(table + 10), Some(u16::MAX));
+
+    let heap_cursor = loaded.heap_cursor();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = out;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetAuxWin);
+    assert_eq!(loaded.memory.read_u32_be(out), Some(handle));
+    assert_eq!(loaded.heap_cursor(), heap_cursor);
 }

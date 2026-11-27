@@ -7525,7 +7525,7 @@ impl ProcessNativeMemoryManager {
                 // The native backend currently uses one physical allocator
                 // for both Macintosh heap policies, as the classic backend
                 // does above.
-                let handle = self.allocate_native_handle(memory, size, request.clear);
+                let handle = self.allocate_native_handle(memory, Some(size), request.clear);
                 if handle == 0 {
                     let error = self
                         .native_heap_state()
@@ -9456,14 +9456,17 @@ impl ProcessNativeMemoryManager {
     fn native_handle_allocation_plan(
         &self,
         memory: &GuestAddressSpace,
-        size: u32,
+        size: Option<u32>,
     ) -> Option<(
         ProcessHandleRecord,
         Option<u32>,
         Option<usize>,
         Option<usize>,
     )> {
-        let required = Self::native_allocation_size(size)?;
+        let required = match size {
+            Some(size) => Self::native_allocation_size(size)?,
+            None => 0,
+        };
         let allocator = self.native_allocator.as_ref()?;
         let allocation_limit = self.native_allocation_limit(allocator.heap.heap_limit);
         let reusable_handle_index = allocator
@@ -9481,6 +9484,7 @@ impl ProcessNativeMemoryManager {
                 }
                 let capacity = Self::native_allocation_size(record.capacity)?;
                 (handle_fits
+                    && required != 0
                     && capacity >= required
                     && record
                         .ptr
@@ -9509,7 +9513,7 @@ impl ProcessNativeMemoryManager {
         let (record, next_cursor) = if let Some(index) = reusable_handle_index {
             let mut record = allocator.free_handle_blocks[index];
             let mut next_cursor = None;
-            if record.ptr == 0 {
+            if record.ptr == 0 && required != 0 {
                 reusable_ptr_index = allocator
                     .free_ptr_blocks
                     .iter()
@@ -9537,9 +9541,9 @@ impl ProcessNativeMemoryManager {
                     record.ptr = ptr;
                     next_cursor = Some(next);
                 }
-                record.capacity = size;
+                record.capacity = size.unwrap_or(0);
             }
-            record.size = size;
+            record.size = size.unwrap_or(0);
             (record, next_cursor)
         } else {
             let handle_required = Self::native_allocation_size(4)?;
@@ -9549,18 +9553,22 @@ impl ProcessNativeMemoryManager {
                 handle_required,
                 |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
             )?;
-            let (ptr, after_ptr) = Self::native_allocation_bounds(
-                after_handle,
-                allocation_limit,
-                required,
-                |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
-            )?;
+            let (ptr, after_ptr) = if required == 0 {
+                (0, after_handle)
+            } else {
+                Self::native_allocation_bounds(
+                    after_handle,
+                    allocation_limit,
+                    required,
+                    |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
+                )?
+            };
             (
                 ProcessHandleRecord {
                     handle,
                     ptr,
-                    size,
-                    capacity: size,
+                    size: size.unwrap_or(0),
+                    capacity: size.unwrap_or(0),
                 },
                 Some(after_ptr),
             )
@@ -9583,7 +9591,7 @@ impl ProcessNativeMemoryManager {
         while low < high {
             let middle = low + (high - low + 1) / 2;
             if self
-                .native_handle_allocation_plan(memory, middle * Self::NATIVE_HEAP_ALIGNMENT)
+                .native_handle_allocation_plan(memory, Some(middle * Self::NATIVE_HEAP_ALIGNMENT))
                 .is_some()
             {
                 low = middle;
@@ -9602,7 +9610,7 @@ impl ProcessNativeMemoryManager {
     fn allocate_native_handle(
         &mut self,
         memory: &mut GuestAddressSpace,
-        size: u32,
+        size: Option<u32>,
         clear: bool,
     ) -> u32 {
         let Some((record, next_cursor, reusable_handle_index, reusable_ptr_index)) =
@@ -9611,14 +9619,15 @@ impl ProcessNativeMemoryManager {
             self.set_native_mem_error(Self::MEM_FULL_ERR);
             return 0;
         };
-        let required = Self::native_allocation_size(size).expect("planned handle size fits");
+        let required = Self::native_allocation_size(record.size).expect("planned handle size fits");
 
         if !Self::prepare_native_allocation(
             memory,
             record.handle,
             Self::native_allocation_size(4).expect("four-byte master pointer fits"),
             true,
-        ) || !Self::prepare_native_allocation(memory, record.ptr, required, clear)
+        ) || (size.is_some()
+            && !Self::prepare_native_allocation(memory, record.ptr, required, clear))
             || PpcMemory::write_u32_be(memory, record.handle, record.ptr).is_none()
         {
             self.set_native_mem_error(Self::MEM_FULL_ERR);
@@ -9642,6 +9651,11 @@ impl ProcessNativeMemoryManager {
         self.commit_new_handle_record(record, true);
         self.native_allocator_dirty = true;
         record.handle
+    }
+
+    /// Allocate a native master pointer initialized to NIL, with no data block.
+    pub(crate) fn new_empty_native_handle(&mut self, memory: &mut GuestAddressSpace) -> u32 {
+        self.allocate_native_handle(memory, None, false)
     }
 
     /// Compatibility wrapper for process-owned native callers that already

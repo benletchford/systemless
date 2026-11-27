@@ -5,6 +5,7 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PpcToolboxStartupState {
+    pub(super) default_aux_window_handle: u32,
     pub(super) descriptors: dispatch_descriptor::PpcDescriptorState,
     pub(super) theme_buttons: dispatch_theme_button::PpcThemeButtonState,
     pub(super) input_sprocket_drivers: inputsprocket_drivers::PpcInputSprocketDriverState,
@@ -150,6 +151,7 @@ pub struct PpcToolboxStartupState {
 impl Default for PpcToolboxStartupState {
     fn default() -> Self {
         Self {
+            default_aux_window_handle: 0,
             descriptors: Default::default(),
             theme_buttons: Default::default(),
             input_sprocket_drivers: Default::default(),
