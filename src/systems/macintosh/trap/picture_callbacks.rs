@@ -41,18 +41,19 @@ fn rect(data: &[u8]) -> [i16; 4] {
     std::array::from_fn(|index| i16::from_be_bytes([data[index * 2], data[index * 2 + 1]]))
 }
 
-struct IndexedPictureBits {
-    pixmap_header: [u8; 46],
-    color_table: Vec<u8>,
-    pixels: Vec<u8>,
-    source: [i16; 4],
-    destination: [i16; 4],
-    mode: u16,
+pub(crate) struct IndexedPictureBits {
+    pub(crate) pixmap_header: [u8; 46],
+    pub(crate) color_table: Vec<u8>,
+    pub(crate) pixels: Vec<u8>,
+    pub(crate) source: [i16; 4],
+    pub(crate) destination: [i16; 4],
+    pub(crate) mode: u16,
 }
 
 /// Decode an indexed 8-bit PackBitsRect without color matching: the bitmap
 /// bottleneck must receive the source pixels and their original ColorTable.
-fn indexed_picture_bits(command: &PictureCommand) -> Option<IndexedPictureBits> {
+/// PowerPC DrawPicture shares this decoder for its native bitsProc calls.
+pub(crate) fn indexed_picture_bits(command: &PictureCommand) -> Option<IndexedPictureBits> {
     if command.opcode != 0x98 {
         return None;
     }

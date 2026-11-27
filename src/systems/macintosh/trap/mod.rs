@@ -30,7 +30,7 @@ pub(crate) mod pict;
 mod pict_image;
 pub(crate) mod qtrle;
 mod picture_stream;
-mod picture_callbacks;
+pub(crate) mod picture_callbacks;
 mod quickdraw;
 mod resource;
 mod sane;
