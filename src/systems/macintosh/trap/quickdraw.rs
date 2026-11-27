@@ -563,25 +563,29 @@ impl super::TrapDispatcher {
         let old = bus.read_long(port + offset);
         let handle = if self.owned_bit_pixpats.contains(&old)
             && bus.get_alloc_size(old) == Some(4)
-            && bus.get_alloc_size(bus.read_long(old)).is_some_and(|size| size >= 28)
+            && bus
+                .get_alloc_size(bus.read_long(old))
+                .is_some_and(|size| size >= crate::quickdraw::PIXPAT_RECORD_SIZE)
         {
             old
         } else {
-            let record = bus.alloc(28);
+            let record = bus.alloc(crate::quickdraw::PIXPAT_RECORD_SIZE);
             let handle = bus.alloc(4);
             if record == 0 || handle == 0 {
                 if record != 0 { bus.free(record); }
                 if handle != 0 { bus.free(handle); }
                 return;
             }
-            for i in 0..28 { bus.write_byte(record + i, 0); }
+            for i in 0..crate::quickdraw::PIXPAT_RECORD_SIZE {
+                bus.write_byte(record + i, 0);
+            }
             bus.write_long(handle, record);
             self.owned_bit_pixpats.insert(handle);
             handle
         };
         let record = bus.read_long(handle);
         bus.write_word(record, 0);
-        bus.write_bytes(record + 20, &pattern);
+        bus.write_bytes(record + crate::quickdraw::PIXPAT_PAT1_DATA_OFFSET, &pattern);
         bus.write_long(port + offset, handle);
     }
 
