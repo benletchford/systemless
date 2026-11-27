@@ -984,50 +984,29 @@ pub(super) fn dispatch_quickdraw_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::EraseRect => {
-            let is_color = memory
-                .read_u16_be(current_gworld.wrapping_add(6))
-                .is_some_and(|version| version & 0xc000 == 0xc000);
-            let pixpat = if is_color {
-                memory
-                    .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET))
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-            let mut pattern = toolbox_startup.quickdraw_back_pattern;
-            if !is_color {
-                let _ = memory.read_bytes_into(current_gworld.wrapping_add(32), &mut pattern);
-            }
             if ppc_hle_trace_enabled() {
                 eprintln!(
-                    "[PPC-TRACE] EraseRect tick={} port=${:08X} rect=${:08X} bounds={:?} bkPixPat=${:08X}",
-                    tick_count, current_gworld, cpu.gpr[3],
-                    ppc_read_rect(memory, cpu.gpr[3]), pixpat,
+                    "[PPC-TRACE] EraseRect tick={} port=${:08X} rect=${:08X} bounds={:?}",
+                    tick_count,
+                    current_gworld,
+                    cpu.gpr[3],
+                    ppc_read_rect(memory, cpu.gpr[3]),
                 );
             }
-            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3])
-                .filter(|_| !ppc_port_pen_hidden(memory, current_gworld))
-            {
-                let _ = ppc_erase_rect(
+            crate::quickdraw::routines::erase_rect(
+                &mut PpcQuickDrawRoutines {
                     memory,
                     gworlds,
-                    current_gworld,
-                    rect,
-                    pixpat,
-                    pattern,
-                    (
+                    port: current_gworld,
+                    toolbox_startup,
+                    fore: (
                         *quickdraw_fore_color,
                         quickdraw_fore_indices.get(&current_gworld).copied(),
                     ),
-                    (
-                        *quickdraw_back_color,
-                        toolbox_startup
-                            .quickdraw_back_indices
-                            .get(&current_gworld)
-                            .copied(),
-                    ),
-                );
-            }
+                    back_color: *quickdraw_back_color,
+                },
+                cpu.gpr[3],
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::InvertRect => {
@@ -3446,5 +3425,80 @@ pub(super) fn ppc_set_std_procs(memory: &mut PpcSectionMem, procs: u32, color: b
         for index in 15..20u32 {
             let _ = memory.write_u32_be(procs + index * 4, 0);
         }
+    }
+}
+
+/// The PowerPC import dispatcher's side of the shared QuickDraw routines
+/// (`crate::quickdraw::routines`), over the current port.
+struct PpcQuickDrawRoutines<'a> {
+    memory: &'a mut PpcSectionMem,
+    gworlds: &'a [PpcGWorldRecord],
+    port: u32,
+    toolbox_startup: &'a mut PpcToolboxStartupState,
+    fore: (PpcRgbColor, Option<u8>),
+    back_color: PpcRgbColor,
+}
+
+impl crate::quickdraw::routines::QuickDrawRoutineContext for PpcQuickDrawRoutines<'_> {
+    fn read_rect(&mut self, ptr: u32) -> Option<crate::trap::types::Rect> {
+        let (top, left, bottom, right) = ppc_read_rect(self.memory, ptr)?;
+        Some(crate::trap::types::Rect {
+            top,
+            left,
+            bottom,
+            right,
+        })
+    }
+
+    fn record_picture_rect(&mut self, opcode: u16, rect: crate::trap::types::Rect) -> bool {
+        let Some(commands) = ppc_open_picture_commands(self.toolbox_startup, self.port) else {
+            return false;
+        };
+        pict::recording_push_rect(
+            commands,
+            opcode,
+            (rect.top, rect.left, rect.bottom, rect.right),
+        );
+        true
+    }
+
+    fn pen_hidden(&mut self) -> bool {
+        ppc_port_pen_hidden(self.memory, self.port)
+    }
+
+    fn fill_rect_with_background(&mut self, rect: crate::trap::types::Rect) {
+        let port = self.port;
+        let is_color = self
+            .memory
+            .read_u16_be(port.wrapping_add(6))
+            .is_some_and(|version| version & 0xc000 == 0xc000);
+        let pixpat = if is_color {
+            self.memory
+                .read_u32_be(port.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let mut pattern = self.toolbox_startup.quickdraw_back_pattern;
+        if !is_color {
+            let _ = self
+                .memory
+                .read_bytes_into(port.wrapping_add(32), &mut pattern);
+        }
+        let back_index = self
+            .toolbox_startup
+            .quickdraw_back_indices
+            .get(&port)
+            .copied();
+        let _ = ppc_erase_rect(
+            self.memory,
+            self.gworlds,
+            port,
+            (rect.top, rect.left, rect.bottom, rect.right),
+            pixpat,
+            pattern,
+            self.fore,
+            (self.back_color, back_index),
+        );
     }
 }

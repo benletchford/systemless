@@ -3007,54 +3007,14 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let rect_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                let r = read_rect(bus, rect_ptr);
-                if trace_qd_colors_enabled() {
-                    eprintln!(
-                        "[QD-COLOR] EraseRect port=${:08X} rect=({},{}..{},{}) bg=({:04X},{:04X},{:04X}) tick={}",
-                        *self.current_port,
-                        r.top,
-                        r.left,
-                        r.bottom,
-                        r.right,
-                        self.bg_color.0,
-                        self.bg_color.1,
-                        self.bg_color.2,
-                        self.current_tick()
-                    );
-                }
-                if trace_eraserect_enabled() {
-                    let a5 = cpu.read_reg(Register::A5);
-                    let global_ptr = bus.read_long(a5);
-                    let port = bus.read_long(global_ptr);
-                    let port_version = bus.read_word(port.wrapping_add(6));
-                    let port_base = if (port_version & 0xC000) != 0 {
-                        let pmh = bus.read_long(port.wrapping_add(2));
-                        if pmh != 0 {
-                            let pm = bus.read_long(pmh);
-                            if pm != 0 {
-                                bus.read_long(pm)
-                            } else {
-                                0
-                            }
-                        } else {
-                            0
-                        }
-                    } else {
-                        bus.read_long(port.wrapping_add(2))
-                    };
-                    eprintln!(
-                        "[ERASERECT] rect=({},{}..{},{}) port=${:08X} portBase=${:08X} screenBase=${:08X}",
-                        r.top, r.left, r.bottom, r.right, port, port_base, self.screen_mode.0,
-                    );
-                }
-                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
-                    pict::recording_push_rect(commands, 0x0032, (r.top, r.left, r.bottom, r.right));
-                    return Some(Ok(()));
-                }
-                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
-                    return Some(Ok(()));
-                }
-                self.draw_rect(cpu, bus, &r, ShapeOp::Erase);
+                crate::quickdraw::routines::erase_rect(
+                    &mut M68kQuickDrawRoutines {
+                        dispatcher: self,
+                        cpu,
+                        bus,
+                    },
+                    rect_ptr,
+                );
                 Ok(())
             }
 
@@ -26460,3 +26420,84 @@ impl super::TrapDispatcher {
 
 #[cfg(test)]
 mod tests;
+
+/// The 68K trap dispatcher's side of the shared QuickDraw routines
+/// (`crate::quickdraw::routines`), over the current port.
+struct M68kQuickDrawRoutines<'a, C: CpuOps> {
+    dispatcher: &'a mut crate::trap::TrapDispatcher,
+    cpu: &'a mut C,
+    bus: &'a mut MacMemoryBus,
+}
+
+impl<C: CpuOps> crate::quickdraw::routines::QuickDrawRoutineContext
+    for M68kQuickDrawRoutines<'_, C>
+{
+    #[inline]
+    fn read_rect(&mut self, ptr: u32) -> Option<Rect> {
+        let r = read_rect(self.bus, ptr);
+        if trace_qd_colors_enabled() {
+            eprintln!(
+                "[QD-COLOR] EraseRect port=${:08X} rect=({},{}..{},{}) bg=({:04X},{:04X},{:04X}) tick={}",
+                *self.dispatcher.current_port,
+                r.top,
+                r.left,
+                r.bottom,
+                r.right,
+                self.dispatcher.bg_color.0,
+                self.dispatcher.bg_color.1,
+                self.dispatcher.bg_color.2,
+                self.dispatcher.current_tick()
+            );
+        }
+        if trace_eraserect_enabled() {
+            let a5 = self.cpu.read_reg(Register::A5);
+            let global_ptr = self.bus.read_long(a5);
+            let port = self.bus.read_long(global_ptr);
+            let port_version = self.bus.read_word(port.wrapping_add(6));
+            let port_base = if (port_version & 0xC000) != 0 {
+                let pmh = self.bus.read_long(port.wrapping_add(2));
+                if pmh != 0 {
+                    let pm = self.bus.read_long(pmh);
+                    if pm != 0 {
+                        self.bus.read_long(pm)
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                }
+            } else {
+                self.bus.read_long(port.wrapping_add(2))
+            };
+            eprintln!(
+                "[ERASERECT] rect=({},{}..{},{}) port=${:08X} portBase=${:08X} screenBase=${:08X}",
+                r.top, r.left, r.bottom, r.right, port, port_base, self.dispatcher.screen_mode.0,
+            );
+        }
+        Some(r)
+    }
+
+    #[inline]
+    fn record_picture_rect(&mut self, opcode: u16, rect: Rect) -> bool {
+        let Some((_, _, _, _, _, commands)) = self.dispatcher.recording_picture.as_mut() else {
+            return false;
+        };
+        pict::recording_push_rect(
+            commands,
+            opcode,
+            (rect.top, rect.left, rect.bottom, rect.right),
+        );
+        true
+    }
+
+    #[inline]
+    fn pen_hidden(&mut self) -> bool {
+        self.dispatcher.pn_vis < 0
+    }
+
+    #[inline]
+    fn fill_rect_with_background(&mut self, rect: Rect) {
+        self.dispatcher
+            .draw_rect(self.cpu, self.bus, &rect, ShapeOp::Erase);
+    }
+}

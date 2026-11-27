@@ -8966,3 +8966,37 @@ fn make_itable_after_restoring_faded_screen_ctab_matches_logical_colors() {
     // The hardware stays faded until the application fades it back in.
     assert!(loaded.screen_clut.iter().all(|entry| *entry == [0; 3]));
 }
+
+#[test]
+fn erase_rect_records_into_an_open_picture_and_not_into_an_open_region() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"EraseRect")).unwrap();
+    let rect = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(rect, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, rect, 10, 10, 30, 30).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (20, 20), 17);
+
+    // Imaging With QuickDraw (1994), p. A-8: eraseRect is opcode $0032.
+    loaded.toolbox_startup.open_picture = Some((1, PPC_MAIN_GWORLD, (0, 0, 40, 40), Vec::new()));
+    loaded.cpu.gpr[3] = rect;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::EraseRect);
+    assert_eq!(
+        loaded.toolbox_startup.open_picture.as_ref().unwrap().3,
+        [0, 0x32, 0, 10, 0, 10, 0, 30, 0, 30]
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (20, 20)),
+        Some(17)
+    );
+
+    // p. 3-87: only lines and framed shapes affect an open region. The pen
+    // stays visible here, so the rectangle is erased.
+    loaded.toolbox_startup.open_picture = None;
+    loaded.toolbox_startup.open_region_port = PPC_MAIN_GWORLD;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::EraseRect);
+    assert!(loaded.toolbox_startup.open_region_rows.is_none());
+    assert_ne!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (20, 20)),
+        Some(17)
+    );
+}
