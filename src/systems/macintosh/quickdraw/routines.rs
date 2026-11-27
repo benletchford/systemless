@@ -38,7 +38,7 @@ impl ShapeVerb {
 /// current graphics port.
 pub(crate) trait QuickDrawRoutineContext {
     /// The rectangle at `ptr` in guest memory, or `None` when it cannot be read.
-    fn read_rect(&mut self, ptr: u32) -> Option<Rect>;
+    fn read_rect(&mut self, ptr: u32, _verb: ShapeVerb) -> Option<Rect>;
     /// Records `opcode` with `rect` when a picture is open in the current
     /// port, returning whether one was. A recorded call draws nothing.
     fn record_picture_rect(&mut self, opcode: u16, rect: Rect) -> bool;
@@ -54,16 +54,23 @@ pub(crate) trait QuickDrawRoutineContext {
 /// mode. Imaging With QuickDraw (1994), p. 3-61. It is not a framed shape, so
 /// an open region does not record it (p. 3-87).
 pub(crate) fn erase_rect<C: QuickDrawRoutineContext + ?Sized>(context: &mut C, rect_ptr: u32) {
-    let Some(rect) = context.read_rect(rect_ptr) else {
-        return;
-    };
-    if context.record_picture_rect(ShapeVerb::Erase.rect_opcode(), rect) {
-        return;
+    if let Some(rect) = drawable_rect(context, rect_ptr, ShapeVerb::Erase) {
+        context.fill_rect_with_background(rect);
     }
-    if context.pen_hidden() {
-        return;
+}
+
+/// Record the rectangle before checking pen visibility. Unframed shapes
+/// leave an open region's boundary alone.
+pub(crate) fn drawable_rect<C: QuickDrawRoutineContext + ?Sized>(
+    context: &mut C,
+    rect_ptr: u32,
+    verb: ShapeVerb,
+) -> Option<Rect> {
+    let rect = context.read_rect(rect_ptr, verb)?;
+    if context.record_picture_rect(verb.rect_opcode(), rect) || context.pen_hidden() {
+        return None;
     }
-    context.fill_rect_with_background(rect);
+    Some(rect)
 }
 
 #[cfg(test)]
@@ -78,7 +85,7 @@ mod tests {
     }
 
     impl QuickDrawRoutineContext for Recorder {
-        fn read_rect(&mut self, ptr: u32) -> Option<Rect> {
+        fn read_rect(&mut self, ptr: u32, _verb: ShapeVerb) -> Option<Rect> {
             (ptr != 0).then_some(Rect {
                 top: 1,
                 left: 2,

@@ -13397,6 +13397,21 @@
     }
 
     #[test]
+    fn invert_rect_records_into_an_open_picture() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let rect = bus.alloc(8);
+        for (i, v) in [1u16, 2, 3, 4].into_iter().enumerate() {
+            bus.write_word(rect + i as u32 * 2, v);
+        }
+        d.recording_picture = Some((1, 0, 0, 10, 10, Vec::new()));
+        qd_call_long(&mut d, &mut cpu, &mut bus, 0x0A4, rect);
+        assert_eq!(
+            d.recording_picture.as_ref().unwrap().5,
+            [0, 0x33, 0, 1, 0, 2, 0, 3, 0, 4]
+        );
+    }
+
+    #[test]
     fn erase_rect_does_not_add_to_an_open_region() {
         // Imaging With QuickDraw (1994), p. 3-87: only lines and framed
         // shapes affect an open region's outline.

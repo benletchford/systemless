@@ -2,6 +2,7 @@
 //! coordinate transforms, region ops, drawing commands).
 
 use super::types::{read_rect, Rect, ShapeOp};
+use crate::quickdraw::routines::{drawable_rect, ShapeVerb};
 use crate::cpu::{CpuOps, Register};
 use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -3024,11 +3025,17 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let rect_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
-                    return Some(Ok(()));
+                if let Some(rect) = drawable_rect(
+                    &mut M68kQuickDrawRoutines {
+                        dispatcher: self,
+                        cpu,
+                        bus,
+                    },
+                    rect_ptr,
+                    ShapeVerb::Invert,
+                ) {
+                    self.draw_rect(cpu, bus, &rect, ShapeOp::Invert);
                 }
-                self.draw_rect(cpu, bus, &r, ShapeOp::Invert);
                 Ok(())
             }
 
@@ -26299,9 +26306,9 @@ impl<C: CpuOps> crate::quickdraw::routines::QuickDrawRoutineContext
     for M68kQuickDrawRoutines<'_, C>
 {
     #[inline]
-    fn read_rect(&mut self, ptr: u32) -> Option<Rect> {
+    fn read_rect(&mut self, ptr: u32, verb: ShapeVerb) -> Option<Rect> {
         let r = read_rect(self.bus, ptr);
-        if trace_qd_colors_enabled() {
+        if verb == ShapeVerb::Erase && trace_qd_colors_enabled() {
             eprintln!(
                 "[QD-COLOR] EraseRect port=${:08X} rect=({},{}..{},{}) bg=({:04X},{:04X},{:04X}) tick={}",
                 *self.dispatcher.current_port,
@@ -26315,7 +26322,7 @@ impl<C: CpuOps> crate::quickdraw::routines::QuickDrawRoutineContext
                 self.dispatcher.current_tick()
             );
         }
-        if trace_eraserect_enabled() {
+        if verb == ShapeVerb::Erase && trace_eraserect_enabled() {
             let a5 = self.cpu.read_reg(Register::A5);
             let global_ptr = self.bus.read_long(a5);
             let port = self.bus.read_long(global_ptr);

@@ -1,4 +1,5 @@
 use super::*;
+use crate::quickdraw::routines::{drawable_rect, ShapeVerb};
 use crate::trap::{pict, TrapDispatcher};
 
 pub(super) struct PpcQuickDrawDispatchContext<'a> {
@@ -983,8 +984,9 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::EraseRect => {
-            if ppc_hle_trace_enabled() {
+        PpcImportDispatcherTarget::EraseRect | PpcImportDispatcherTarget::InvertRect => {
+            let erase = binding.dispatcher_target == PpcImportDispatcherTarget::EraseRect;
+            if erase && ppc_hle_trace_enabled() {
                 eprintln!(
                     "[PPC-TRACE] EraseRect tick={} port=${:08X} rect=${:08X} bounds={:?}",
                     tick_count,
@@ -993,25 +995,26 @@ pub(super) fn dispatch_quickdraw_import(
                     ppc_read_rect(memory, cpu.gpr[3]),
                 );
             }
-            crate::quickdraw::routines::erase_rect(
-                &mut PpcQuickDrawRoutines {
+            let mut context = PpcQuickDrawRoutines {
+                memory,
+                gworlds,
+                port: current_gworld,
+                toolbox_startup,
+                fore: (
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(&current_gworld).copied(),
+                ),
+                back_color: *quickdraw_back_color,
+            };
+            if erase {
+                crate::quickdraw::routines::erase_rect(&mut context, cpu.gpr[3]);
+            } else if let Some(rect) = drawable_rect(&mut context, cpu.gpr[3], ShapeVerb::Invert) {
+                ppc_invert_rect_bounds(
                     memory,
                     gworlds,
-                    port: current_gworld,
-                    toolbox_startup,
-                    fore: (
-                        *quickdraw_fore_color,
-                        quickdraw_fore_indices.get(&current_gworld).copied(),
-                    ),
-                    back_color: *quickdraw_back_color,
-                },
-                cpu.gpr[3],
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::InvertRect => {
-            if !ppc_port_pen_hidden(memory, current_gworld) {
-                let _ = ppc_invert_rect(cpu, memory, gworlds, current_gworld);
+                    current_gworld,
+                    (rect.top, rect.left, rect.bottom, rect.right),
+                );
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -3440,7 +3443,7 @@ struct PpcQuickDrawRoutines<'a> {
 }
 
 impl crate::quickdraw::routines::QuickDrawRoutineContext for PpcQuickDrawRoutines<'_> {
-    fn read_rect(&mut self, ptr: u32) -> Option<crate::trap::types::Rect> {
+    fn read_rect(&mut self, ptr: u32, _verb: ShapeVerb) -> Option<crate::trap::types::Rect> {
         let (top, left, bottom, right) = ppc_read_rect(self.memory, ptr)?;
         Some(crate::trap::types::Rect {
             top,
