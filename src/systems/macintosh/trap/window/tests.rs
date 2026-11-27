@@ -11202,3 +11202,61 @@ fn show_window_centres_a_sticking_out_window_over_the_main_window_when_fitting()
         "without --fit-game-window ShowWindow leaves the window where the game put it"
     );
 }
+
+#[test]
+fn movewindow_custom_wdef_arms_wcalcrgns_then_wdraw_trampoline() {
+    // Moving a visible window with an application definition asks the
+    // definition to recalculate its regions and draw its frame at the new
+    // position, with the same shared schedule PowerPC uses.
+    let (mut disp, mut cpu, mut bus) = setup();
+    let proc_id = (200i16 << 4) | 3;
+    install_wind_resource(
+        &mut disp,
+        &mut bus,
+        600,
+        (34, 2, 114, 473),
+        proc_id,
+        true,
+        false,
+        0,
+        b"",
+    );
+    let wdef_proc = install_wdef_resource(&mut disp, &mut bus, 200);
+    let sp = TEST_SP - 10;
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::PC, 0x1234_5678);
+    bus.write_long(sp, 0); // behind
+    bus.write_long(sp + 4, 0); // wStorage
+    bus.write_word(sp + 8, 600); // windowID
+    bus.write_long(sp + 10, 0);
+    assert!(dispatch(&mut disp, 0x246, &mut cpu, &mut bus).unwrap().is_ok());
+    let window_ptr = bus.read_long(sp + 10);
+    assert_ne!(window_ptr, 0);
+
+    // MoveWindow(theWindow, h, v, front): SP+0 front, +2 v, +4 h, +6 window.
+    let sp = TEST_SP - 10;
+    let return_pc = 0x2345_6788;
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::PC, return_pc);
+    bus.write_word(sp, 0);
+    bus.write_word(sp + 2, 60);
+    bus.write_word(sp + 4, 40);
+    bus.write_long(sp + 6, window_ptr);
+    assert!(dispatch(&mut disp, 0x11B, &mut cpu, &mut bus).unwrap().is_ok());
+
+    let tramp = disp.window_def_trampoline;
+    assert_eq!(cpu.read_reg(Register::PC), tramp, "MoveWindow should call the WDEF");
+    assert_eq!(bus.read_long(cpu.read_reg(Register::A7)), return_pc);
+    assert_eq!(bus.read_long(tramp + 16), window_ptr);
+    assert_eq!(bus.read_long(tramp + 32), wdef_proc);
+    assert_eq!(
+        bus.read_word(tramp + 22),
+        crate::systems::macintosh::window_definition::WCALC_RGNS as u16
+    );
+    assert_eq!(bus.read_word(tramp + 46), 0x4EF9, "wCalcRgns should chain to wDraw");
+    let draw_tramp = bus.read_long(tramp + 48);
+    assert_eq!(
+        bus.read_word(draw_tramp + 22),
+        crate::systems::macintosh::window_definition::WDRAW as u16
+    );
+}

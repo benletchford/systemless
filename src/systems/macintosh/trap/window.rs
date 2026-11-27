@@ -1048,6 +1048,30 @@ impl super::TrapDispatcher {
         )
     }
 
+    /// After MoveWindow or DragWindow moves a visible window, its application
+    /// definition recalculates its regions and draws its frame at the new
+    /// position, as on PowerPC.
+    fn arm_window_def_move<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        window_ptr: u32,
+    ) -> bool {
+        if !self.window_visible(bus, window_ptr)
+            || !self.window_uses_custom_def_proc(bus, window_ptr)
+        {
+            return false;
+        }
+        let proc_id = self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0);
+        self.arm_window_def_messages(
+            cpu,
+            bus,
+            window_ptr,
+            proc_id,
+            window_definition::messages(WindowDefinitionEvent::Move),
+        )
+    }
+
     fn desktop_gray_region_rect(&self, bus: &MacMemoryBus) -> (i16, i16, i16, i16) {
         let (_, _, width, height, _) = self.screen_mode;
         let screen_w = width.min(i16::MAX as u16) as i16;
@@ -5301,6 +5325,7 @@ impl super::TrapDispatcher {
                 self.move_window_to_global(bus, cpu, the_window, h_global, v_global, front_flag);
 
                 cpu.write_reg(Register::A7, sp + 10);
+                self.arm_window_def_move(cpu, bus, the_window);
                 Ok(())
             }
 
@@ -5539,6 +5564,7 @@ impl super::TrapDispatcher {
                     if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
                         self.event_queue.remove(index);
                     }
+                    let mut moved_window = None;
                     if Self::point_in_rect(mouse.0, mouse.1, tracking.bounds_rect)
                         && mouse != tracking.start_mouse
                     {
@@ -5569,6 +5595,7 @@ impl super::TrapDispatcher {
                             new_v,
                             !tracking.command_down,
                         );
+                        moved_window = Some(tracking.window_ptr);
                         if trace_dragwindow_enabled() {
                             eprintln!(
                                 "[DRAGWINDOW] moved window=${:08X} from=({}, {}) to=({}, {}) front={}",
@@ -5584,6 +5611,9 @@ impl super::TrapDispatcher {
                         eprintln!("[DRAGWINDOW] no move");
                     }
                     cpu.write_reg(Register::A7, tracking.stack_ptr + 12);
+                    if let Some(window) = moved_window {
+                        self.arm_window_def_move(cpu, bus, window);
+                    }
                     return Some(Ok(()));
                 }
 
@@ -5642,6 +5672,7 @@ impl super::TrapDispatcher {
                     self.window_tracking = Some(tracking);
                     cpu.write_reg(Register::A7, sp);
                 } else {
+                    let mut moved_window = None;
                     if Self::point_in_rect(mouse.0, mouse.1, bounds_rect) && mouse != start_mouse {
                         let new_v = original_port_origin
                             .0
@@ -5668,8 +5699,12 @@ impl super::TrapDispatcher {
                             new_v,
                             !tracking.command_down,
                         );
+                        moved_window = Some(window_ptr);
                     }
                     cpu.write_reg(Register::A7, sp + 12);
+                    if let Some(window) = moved_window {
+                        self.arm_window_def_move(cpu, bus, window);
+                    }
                 }
                 Ok(())
             }
