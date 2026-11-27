@@ -22,6 +22,7 @@ pub(crate) const PIXPAT_RECORD_SIZE: u32 = 28;
 pub(crate) const PIXPAT_PAT1_DATA_OFFSET: u32 = 20;
 pub mod fonts;
 pub mod gpu;
+pub(crate) mod pixpat;
 pub(crate) mod raster;
 pub(crate) mod routines;
 pub mod text;

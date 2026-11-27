@@ -12618,7 +12618,7 @@
         }
 
         let pixpat = d
-            .decode_raw_pixpat(&bus, pp_handle)
+            .decode_raw_pixpat(&mut bus, pp_handle)
             .expect("raw type-1 PixPat should decode");
         assert_eq!(&pixpat.clut[..expected.len()], &expected);
     }
