@@ -21,6 +21,7 @@ autobins = false
 include = [
     "/Cargo.toml",
     "/Cargo.lock",
+    "/build.rs",
     "/src/**",
     "/*.md",
     "/LICENSE",
