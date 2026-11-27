@@ -1199,9 +1199,7 @@ impl super::TrapDispatcher {
     ) {
         let (pen_h, pen_w) = self.pn_size;
 
-        let width = r.right - r.left;
-        let height = r.bottom - r.top;
-        if width <= 0 || height <= 0 {
+        if r.right <= r.left || r.bottom <= r.top {
             return;
         }
 
@@ -1227,7 +1225,7 @@ impl super::TrapDispatcher {
             )
         });
         self.draw_generic_shape_with_geometry(cpu, bus, r, op, false, shape_rows, None, |y, x| {
-            let idx = (y - r.top) as usize;
+            let idx = (i32::from(y) - i32::from(r.top)) as usize;
             if idx >= spans.len() {
                 return 0;
             }
@@ -1237,7 +1235,7 @@ impl super::TrapDispatcher {
             }
 
             let inside = if let ShapeOp::Frame = op {
-                let idx_in = (y - r_inset.top) as usize;
+                let idx_in = (i32::from(y) - i32::from(r_inset.top)) as usize;
                 if idx_in >= spans_inset.len() || y < r_inset.top || y >= r_inset.bottom {
                     return 255;
                 }

@@ -11271,6 +11271,25 @@
     }
 
     #[test]
+    fn wrapped_round_rect_is_empty_in_68k_traps() {
+        for trap in [0x0B0, 0x0B1] {
+            let (mut d, mut cpu, mut bus) = setup_with_port();
+            let rect_ptr = 0x300000;
+            write_rect(&mut bus, rect_ptr, i16::MAX, 232, -32743, 320);
+            bus.write_word(TEST_SP, 16);
+            bus.write_word(TEST_SP + 2, 16);
+            bus.write_long(TEST_SP + 4, rect_ptr);
+
+            let screen_base = bus.read_long(0x0824);
+            let before = bus.read_bytes(screen_base, 64 * 342);
+            let result = d.dispatch_quickdraw(true, trap, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+            assert_eq!(bus.read_bytes(screen_base, 64 * 342), before);
+        }
+    }
+
+    #[test]
     fn test_erase_round_rect() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let rect_ptr = 0x300000u32;
