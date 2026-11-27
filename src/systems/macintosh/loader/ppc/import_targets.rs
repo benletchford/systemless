@@ -7765,6 +7765,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "GetMovieDisplayBoundsRgn") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::GetMovieDisplayBoundsRgn,
         ),
+        ("QuickTimeLib", "GetMovieDisplayClipRgn") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMovieDisplayClipRgn,
+        ),
         ("QuickTimeLib", "SetMovieDisplayClipRgn") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::SetMovieDisplayClipRgn,
         ),
@@ -7836,6 +7839,12 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         ("QuickTimeLib", "MediaSetGraphicsMode") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::MediaSetGraphicsMode,
+        ),
+        ("QuickTimeLib", "TranslateMatrix") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::TranslateMatrix,
+        ),
+        ("QuickTimeLib", "ScaleMatrix") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::ScaleMatrix,
         ),
         ("QuickTimeLib", "SetIdentityMatrix") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::SetIdentityMatrix,
