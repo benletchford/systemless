@@ -978,7 +978,7 @@ fn get_shared_library_binds_bundled_dependencies_before_relocation() {
         None,
     )
     .unwrap();
-    let scratch = PPC_HEAP_BASE;
+    let scratch = PPC_HEAP_BASE - 0x1000;
     loaded.memory.add_region(scratch, vec![0; 128]);
     write_ppc_pstring(&mut loaded.memory, scratch, b"GameLibrary");
     loaded.cpu.gpr[3..=8].copy_from_slice(&[
