@@ -202,11 +202,49 @@ pub(super) fn ppc_get_shared_library(
     if find_flags == PPC_CFM_FIND_LIB && existing_connection.is_none() && !statically_imported_hle {
         return return_error(PPC_FRAG_LIB_NOT_FOUND);
     }
+    if existing_connection.is_none() {
+        if let Some(fragment) = cfm_library_fragments
+            .iter()
+            .find(|fragment| fragment.name.eq_ignore_ascii_case(&lib_name))
+        {
+            let Ok(size) = u32::try_from(fragment.bytes.len()) else {
+                return return_error(PPC_FRAG_NO_MEM);
+            };
+            let address =
+                ppc_process_heap_alloc(process_memory_manager, memory, heap_cursor, size, false);
+            if address == 0 || memory.write_bytes(address, &fragment.bytes).is_none() {
+                return return_error(PPC_FRAG_NO_MEM);
+            }
+            return ppc_get_fragment(
+                cpu,
+                guest_calls,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                stack_base,
+                cfm_connections,
+                cfm_library_fragments,
+                next_cfm_connection_id,
+                import_run_state,
+                [
+                    address,
+                    size,
+                    lib_name_ptr,
+                    find_flags,
+                    conn_id_ptr,
+                    main_addr_ptr,
+                    err_name_ptr,
+                ],
+                Some(size),
+                None,
+            );
+        }
+    }
     let created_connection = existing_connection.is_none();
-    let mut initialization = None;
     let connection = match existing_connection {
         Some(connection) if guest_calls.is_cfm_load_pending(CfmLoadId(connection.id)) => {
-            return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_INIT_LOOP));
+            return return_error(PPC_FRAG_INIT_LOOP);
         }
         Some(connection) => connection,
         None => {
@@ -214,86 +252,7 @@ pub(super) fn ppc_get_shared_library(
             if id == 0 || id > PPC_CFM_MAIN_STUB_COUNT {
                 return return_error(PPC_FRAG_LIB_CONN_ERR);
             }
-            let Some(next_id) = next_cfm_connection_id.checked_add(1) else {
-                return return_error(PPC_FRAG_LIB_CONN_ERR);
-            };
-            let fragment = cfm_library_fragments
-                .iter()
-                .find(|fragment| fragment.name.eq_ignore_ascii_case(&lib_name))
-                .cloned();
-            let connection = if let Some(fragment) = fragment {
-                let fragment_size = match u32::try_from(fragment.bytes.len()) {
-                    Ok(size) => size,
-                    Err(_) => return return_error(PPC_FRAG_NO_MEM),
-                };
-                let fragment_addr = ppc_process_heap_alloc(
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    fragment_size,
-                    false,
-                );
-                if fragment_addr == 0
-                    || memory.write_bytes(fragment_addr, &fragment.bytes).is_none()
-                {
-                    return return_error(PPC_FRAG_NO_MEM);
-                }
-                let prepared = match ppc_prepare_mem_fragment(
-                    &fragment.bytes,
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    import_run_state,
-                    cfm_connections,
-                ) {
-                    Ok(prepared) => prepared,
-                    Err(error) => return return_error(error),
-                };
-                if ppc_hle_trace_enabled() {
-                    eprintln!(
-                        "[PPC-TRACE] GetSharedLibrary {lib_name:?} container=${fragment_addr:08X} size={fragment_size} heap=${:08X}",
-                        *heap_cursor
-                    );
-                }
-                ppc_exempt_fragment_from_partition(
-                    process_memory_manager,
-                    memory,
-                    stack_base,
-                    fragment_size.saturating_add(prepared.code_size),
-                );
-                let connection = PpcCfmConnection {
-                    references: 1,
-                    container: Some(crate::cfm::CfmContainerLocation::Memory {
-                        address: fragment_addr,
-                        length: fragment_size,
-                    }),
-                    sections: prepared.sections.clone(),
-                    id,
-                    library_name: lib_name.clone(),
-                    main_addr: prepared.main_addr,
-                    init_addr: prepared.init_addr,
-                    term_addr: prepared.term_addr,
-                    exports: prepared.exports,
-                };
-                if prepared.init_addr != 0 {
-                    let init_block = match ppc_create_mem_fragment_init_block(
-                        Some(process_memory_manager),
-                        memory,
-                        heap_cursor,
-                        heap_limit,
-                        id,
-                        fragment_addr,
-                        fragment_size,
-                        &lib_name,
-                    ) {
-                        Ok(block) => block,
-                        Err(error) => return return_error(error),
-                    };
-                    initialization = Some((prepared.init_addr, init_block));
-                }
-                connection
-            } else if ppc_is_explicit_hle_cfm_library(&lib_name) {
+            let connection = if ppc_is_explicit_hle_cfm_library(&lib_name) {
                 // System libraries without a supplied PEF remain synthetic
                 // CFM connections whose optional main routine is a no-op.
                 PpcCfmConnection {
@@ -311,7 +270,7 @@ pub(super) fn ppc_get_shared_library(
                 return return_error(PPC_FRAG_LIB_NOT_FOUND);
             };
             cfm_connections.push(connection.clone());
-            *next_cfm_connection_id = next_id;
+            *next_cfm_connection_id = id + 1;
             connection
         }
     };
@@ -328,21 +287,6 @@ pub(super) fn ppc_get_shared_library(
             error_name: err_name_ptr,
         },
     };
-    if let Some((init_addr, init_block)) = initialization {
-        let action = ppc_activate_cfm_initializer(
-            cpu,
-            memory,
-            guest_calls,
-            process_memory_manager,
-            init_addr,
-            init_block,
-            Some(operation),
-        );
-        if action != PpcImportAction::Continue {
-            cfm_connections.retain(|connection| connection.id != operation.id.0);
-        }
-        return action;
-    }
     PpcImportAction::Return(ppc_complete_cfm_load(operation, 0, memory, cfm_connections))
 }
 
@@ -498,6 +442,42 @@ pub(super) fn ppc_get_mem_fragment(
     disk_container_size: Option<u32>,
     disk_file_name: Option<&str>,
 ) -> PpcImportAction {
+    let args = std::array::from_fn(|index| cpu.gpr[index + 3]);
+    ppc_get_fragment(
+        cpu,
+        guest_calls,
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        heap_limit,
+        stack_base,
+        cfm_connections,
+        cfm_library_fragments,
+        next_cfm_connection_id,
+        import_run_state,
+        args,
+        disk_container_size,
+        disk_file_name,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_get_fragment(
+    cpu: &mut PpcCpu,
+    guest_calls: &SharedGuestCallStack,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    stack_base: u32,
+    cfm_connections: &mut Vec<PpcCfmConnection>,
+    cfm_library_fragments: &[PpcCfmLibraryFragment],
+    next_cfm_connection_id: &mut u32,
+    import_run_state: &mut PpcImportRunState,
+    args: [u32; 7],
+    disk_container_size: Option<u32>,
+    disk_file_name: Option<&str>,
+) -> PpcImportAction {
     let first_created_id = *next_cfm_connection_id;
     let action = ppc_load_mem_fragment(
         cpu,
@@ -511,6 +491,7 @@ pub(super) fn ppc_get_mem_fragment(
         cfm_library_fragments,
         next_cfm_connection_id,
         import_run_state,
+        args,
         disk_container_size,
         disk_file_name,
     );
@@ -539,6 +520,7 @@ fn ppc_load_mem_fragment(
     cfm_library_fragments: &[PpcCfmLibraryFragment],
     next_cfm_connection_id: &mut u32,
     import_run_state: &mut PpcImportRunState,
+    args: [u32; 7],
     disk_container_size: Option<u32>,
     disk_file_name: Option<&str>,
 ) -> PpcImportAction {
@@ -546,13 +528,8 @@ fn ppc_load_mem_fragment(
     // Inside Macintosh: PowerPC System Software (1994), pp. 3-21--3-22:
     // GetMemFragment binds an in-memory PEF and returns a connection ID plus
     // its callable main address.
-    let mem_addr = cpu.gpr[3];
-    let length = cpu.gpr[4];
-    let frag_name_ptr = cpu.gpr[5];
-    let find_flags = cpu.gpr[6];
-    let conn_id_ptr = cpu.gpr[7];
-    let main_addr_ptr = cpu.gpr[8];
-    let err_name_ptr = cpu.gpr[9];
+    let [mem_addr, length, frag_name_ptr, find_flags, conn_id_ptr, main_addr_ptr, err_name_ptr] =
+        args;
     if mem_addr == 0
         || length < 8
         || conn_id_ptr == 0

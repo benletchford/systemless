@@ -957,6 +957,57 @@ fn initial_bundled_libraries_bind_dependencies_in_deterministic_order() {
 }
 
 #[test]
+fn get_shared_library_binds_bundled_dependencies_before_relocation() {
+    let application = synthetic_pef_with_import(b"GetSharedLibrary");
+    let library = synthetic_pef_with_library_import(b"RuntimeLibrary", b"RegisterFragment");
+    let runtime = synthetic_pef_with_single_export(b"RegisterFragment", 2, 0, 1);
+    let mut loaded = load_pef_application_with_config_and_optional_system_reservation(
+        &application,
+        PpcLoadConfig::default(),
+        None,
+        vec![
+            PpcCfmLibraryFragment {
+                name: "GameLibrary".into(),
+                bytes: library.into(),
+            },
+            PpcCfmLibraryFragment {
+                name: "RuntimeLibrary".into(),
+                bytes: runtime.into(),
+            },
+        ],
+        None,
+    )
+    .unwrap();
+    let scratch = PPC_HEAP_BASE;
+    loaded.memory.add_region(scratch, vec![0; 128]);
+    write_ppc_pstring(&mut loaded.memory, scratch, b"GameLibrary");
+    loaded.cpu.gpr[3..=8].copy_from_slice(&[
+        scratch,
+        PPC_CFM_POWERPC_ARCH,
+        PPC_CFM_LOAD_LIB,
+        scratch + 32,
+        0,
+        0,
+    ]);
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let connections = &loaded.cfm.as_ref().unwrap().connections;
+    let [runtime, library] = connections.as_slice() else {
+        panic!("expected the runtime and the requested library to be connected");
+    };
+    assert_eq!(runtime.library_name, "RuntimeLibrary");
+    assert_eq!(library.library_name, "GameLibrary");
+    assert_eq!(loaded.memory.read_u32_be(scratch + 32), Some(library.id));
+    assert_eq!(
+        loaded.memory.read_u32_be(library.sections[1].address),
+        Some(runtime.exports[0].address),
+    );
+}
+
+#[test]
 fn get_shared_library_connects_drag_lib_to_the_runtime_drag_manager() {
     let pef = synthetic_pef_with_import(b"GetSharedLibrary");
     let mut loaded = load_pef_application(&pef).unwrap();
