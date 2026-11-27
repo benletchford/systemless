@@ -3003,46 +3003,6 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let rect_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                let r = read_rect(bus, rect_ptr);
-                if trace_qd_colors_enabled() {
-                    eprintln!(
-                        "[QD-COLOR] EraseRect port=${:08X} rect=({},{}..{},{}) bg=({:04X},{:04X},{:04X}) tick={}",
-                        *self.current_port,
-                        r.top,
-                        r.left,
-                        r.bottom,
-                        r.right,
-                        self.bg_color.0,
-                        self.bg_color.1,
-                        self.bg_color.2,
-                        self.current_tick()
-                    );
-                }
-                if trace_eraserect_enabled() {
-                    let a5 = cpu.read_reg(Register::A5);
-                    let global_ptr = bus.read_long(a5);
-                    let port = bus.read_long(global_ptr);
-                    let port_version = bus.read_word(port.wrapping_add(6));
-                    let port_base = if (port_version & 0xC000) != 0 {
-                        let pmh = bus.read_long(port.wrapping_add(2));
-                        if pmh != 0 {
-                            let pm = bus.read_long(pmh);
-                            if pm != 0 {
-                                bus.read_long(pm)
-                            } else {
-                                0
-                            }
-                        } else {
-                            0
-                        }
-                    } else {
-                        bus.read_long(port.wrapping_add(2))
-                    };
-                    eprintln!(
-                        "[ERASERECT] rect=({},{}..{},{}) port=${:08X} portBase=${:08X} screenBase=${:08X}",
-                        r.top, r.left, r.bottom, r.right, port, port_base, self.screen_mode.0,
-                    );
-                }
                 crate::quickdraw::routines::erase_rect(
                     &mut M68kQuickDrawRoutines {
                         dispatcher: self,
@@ -26470,7 +26430,47 @@ impl<C: CpuOps> crate::quickdraw::routines::QuickDrawRoutineContext
 {
     #[inline]
     fn read_rect(&mut self, ptr: u32) -> Option<Rect> {
-        Some(read_rect(self.bus, ptr))
+        let r = read_rect(self.bus, ptr);
+        if trace_qd_colors_enabled() {
+            eprintln!(
+                "[QD-COLOR] EraseRect port=${:08X} rect=({},{}..{},{}) bg=({:04X},{:04X},{:04X}) tick={}",
+                *self.dispatcher.current_port,
+                r.top,
+                r.left,
+                r.bottom,
+                r.right,
+                self.dispatcher.bg_color.0,
+                self.dispatcher.bg_color.1,
+                self.dispatcher.bg_color.2,
+                self.dispatcher.current_tick()
+            );
+        }
+        if trace_eraserect_enabled() {
+            let a5 = self.cpu.read_reg(Register::A5);
+            let global_ptr = self.bus.read_long(a5);
+            let port = self.bus.read_long(global_ptr);
+            let port_version = self.bus.read_word(port.wrapping_add(6));
+            let port_base = if (port_version & 0xC000) != 0 {
+                let pmh = self.bus.read_long(port.wrapping_add(2));
+                if pmh != 0 {
+                    let pm = self.bus.read_long(pmh);
+                    if pm != 0 {
+                        self.bus.read_long(pm)
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                }
+            } else {
+                self.bus.read_long(port.wrapping_add(2))
+            };
+            eprintln!(
+                "[ERASERECT] rect=({},{}..{},{}) port=${:08X} portBase=${:08X} screenBase=${:08X}",
+                r.top, r.left, r.bottom, r.right, port, port_base, self.dispatcher.screen_mode.0,
+            );
+        }
+        Some(r)
     }
 
     #[inline]
