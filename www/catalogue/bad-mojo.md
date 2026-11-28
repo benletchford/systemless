@@ -64,6 +64,18 @@ compatibility:
       the PowerPC slice have not been verified.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/4984
+  - date: "2026-11-28"
+    tester: Catalogue maintainer
+    systemless_version: db42a4e78 native
+    architecture: ppc
+    environment: >-
+      Replayed the original demo with native PowerPC selected and an initial
+      800-by-600, 256-colour display. Selected Play Demo, moved the roach with
+      the arrow keys and crossed into a new room. Four pixel assertions passed,
+      including checks for black margins and scene content. All five frames
+      matched an earlier Systemless replay.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/6820
 artifacts:
 - id: archive
   role: archive
@@ -131,3 +143,6 @@ The 68K demo reaches the first scene in the browser. Select **Play Demo** from
 the opening menu, then use the arrow keys to move the roach. The generic
 [idle-loop improvement](https://github.com/benletchford/systemless/pull/2890)
 allows the unchanged demo to meet the current browser pacing gate.
+
+The native PowerPC demo also supports arrow-key movement and room transitions.
+The verified native PowerPC run started at 800×600 with 256 colours.
