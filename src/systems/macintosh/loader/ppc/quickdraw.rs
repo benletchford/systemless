@@ -3744,18 +3744,6 @@ fn ppc_paint_rect_bounds_with_clip(
     wrote
 }
 
-pub(crate) fn ppc_invert_rect(
-    cpu: &PpcCpu,
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    current_gworld: u32,
-) -> bool {
-    let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) else {
-        return false;
-    };
-    ppc_invert_rect_bounds(memory, gworlds, current_gworld, rect)
-}
-
 pub(crate) fn ppc_invert_pixel_detail(
     memory: &mut PpcSectionMem,
     front: PpcFrontBuffer,
