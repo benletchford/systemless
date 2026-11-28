@@ -3779,7 +3779,26 @@ impl ApplicationHandler for App {
                 // the latest complete guest image at the new drawable size
                 // immediately instead of stretching a stale drawable.
                 if size.width != 0 && size.height != 0 && self.frame.sequence != 0 {
+                    // AppKit has already changed the layer bounds for a live
+                    // resize or a full-screen animation step. Present this
+                    // frame in the same Core Animation transaction, as the
+                    // window transitions Systemless makes itself do, so the
+                    // compositor never shows the old drawable inside the new
+                    // bounds with its edges uncovered.
+                    #[cfg(target_os = "macos")]
+                    let joined_transaction = self
+                        .surface
+                        .as_ref()
+                        .filter(|surface| !surface.transactional_presentation())
+                        .map(|surface| surface.set_transactional_presentation(true))
+                        .is_some();
                     self.present_frame(std::time::Instant::now());
+                    #[cfg(target_os = "macos")]
+                    if joined_transaction {
+                        if let Some(surface) = self.surface.as_ref() {
+                            surface.set_transactional_presentation(false);
+                        }
+                    }
                 }
             }
 
