@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.129.2](https://github.com/benletchford/systemless/compare/v0.129.1...v0.129.2) (2026-11-28)
+
+
+### Bug Fixes
+
+* **68k:** initialize the ROM MinusOne global ([b4bf761](https://github.com/benletchford/systemless/commit/b4bf7615cf7ea0c4f5d1bb096bd043575b2c4720))
+* **68k:** preserve indexed colors when switching window palettes ([4d85fa8](https://github.com/benletchford/systemless/commit/4d85fa8293c1a6923b9e6286f578e9f72c5cd8d2))
+* **catalogue:** clarify Domain 68k counter behavior ([d2550d2](https://github.com/benletchford/systemless/commit/d2550d2f37031cd05fd39b528eeb7dd74e84286c))
+* **catalogue:** correct Crystal Crazy 68k compatibility ([224f2b6](https://github.com/benletchford/systemless/commit/224f2b6db82ed4b06932640b25c0a5b94f7f4646))
+* **catalogue:** correct Gridz 68k compatibility ([99d1cbf](https://github.com/benletchford/systemless/commit/99d1cbf7100c330f007c7775fc7387f7eb3c1196))
+* **catalogue:** correct Skull Cracker PowerPC compatibility ([15f2d2d](https://github.com/benletchford/systemless/commit/15f2d2d5ff8e0ebecf5d9494b88dfbd5ace53daf))
+* **catalogue:** correct the Ultima III 68k play instructions ([db42a4e](https://github.com/benletchford/systemless/commit/db42a4e780f37e5fbc30474f191c610ee0531d7c))
+* **catalogue:** correct X-Wing Demo 68k training compatibility ([e5f855f](https://github.com/benletchford/systemless/commit/e5f855ffee7966c557b1a83bfcddfdf1bc914d08))
+* **catalogue:** record Bad Mojo PowerPC playability ([03a9429](https://github.com/benletchford/systemless/commit/03a94298d7423b4ce0aa57ccd30d465bb0a28e2a))
+* **catalogue:** record Time Warp of Dr. Brain PowerPC settings ([e341be0](https://github.com/benletchford/systemless/commit/e341be0177b4848668475074c5cdd48e7ec48c53))
+* **catalogue:** record verified Koji 68k playability ([8ee0789](https://github.com/benletchford/systemless/commit/8ee0789ee2e7074412c9e51090f4a51da52a9752))
+* **macos:** present live resize frames in the AppKit transaction ([51f017f](https://github.com/benletchford/systemless/commit/51f017ff5969b850c4583175bffc9f501d9b99fc))
+* **ppc:** bind the Appearance window collapse query ([f6e1954](https://github.com/benletchford/systemless/commit/f6e195422e90d7a0e9d1a0318382bd05bca2876c))
+* **ppc:** connect dependencies when loading shared libraries ([f7bb2ce](https://github.com/benletchford/systemless/commit/f7bb2ce0e89850cb2c08ddf1ff6eb1012203f2a1))
+* **ppc:** implement QuickTime matrix and display clip imports ([5691ed7](https://github.com/benletchford/systemless/commit/5691ed7ab6816050a0a6caf541acd4e501af2778))
+* **ppc:** keep HFS file info writes within the parameter block ([63e85d5](https://github.com/benletchford/systemless/commit/63e85d5b043ef756afdb549521b009e5c34b3ded))
+* **ppc:** let the incredible machine help viewer finish startup ([8fb59dc](https://github.com/benletchford/systemless/commit/8fb59dcf901394a3083057c47611a4e46f48485f))
+* **ppc:** materialize runtime color cursor handles ([091719e](https://github.com/benletchford/systemless/commit/091719eff5d8c2a68cea8a987d6740566e017892))
+* **ppc:** resolve indexed colors through the destination port ([4b0144e](https://github.com/benletchford/systemless/commit/4b0144efe72793ddb82406a3ce8da8a4662f3a7e))
+* **ppc:** retain the selected QuickTime movie port ([4f4fc14](https://github.com/benletchford/systemless/commit/4f4fc1488e5b87a6cc052f499b97a18f785fc099))
+* **quickdraw:** handle wrapped 68k round rectangle bounds ([6e2882d](https://github.com/benletchford/systemless/commit/6e2882d099b11921a5116de0db42375aca9d20af))
+* **quickdraw:** skip reserved 68k picture line modes ([3253741](https://github.com/benletchford/systemless/commit/325374152da2ed32a72bb4de18014395e54a325f))
+* reserve sufficient main thread stack for the Windows runner ([70d3094](https://github.com/benletchford/systemless/commit/70d30940e54423ca1e0366552dda9b714523b9f6))
+
 ## [0.129.1](https://github.com/benletchford/systemless/compare/v0.129.0...v0.129.1) (2026-11-27)
 
 
