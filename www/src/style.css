@@ -2067,3 +2067,15 @@ a { text-underline-offset: 3px; }
 a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible {
   outline: 3px solid var(--accent); outline-offset: 4px;
 }
+
+/* Native Mac app launch showcase; browser play remains the primary hero. */
+.mac-nav-link{color:var(--ink);font-size:14px;font-weight:600;white-space:nowrap}
+.mac-promo{display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:center;max-width:calc(var(--library-width) + var(--pad-x) + var(--pad-x));margin:32px auto 0;padding:32px var(--pad-x);border-top:1px solid var(--rule)}
+.mac-promo h2{font:700 clamp(28px,3vw,40px)/1.15 Georgia,serif;letter-spacing:-.025em;margin:14px 0}
+.mac-promo p{color:var(--muted);font-size:17px;line-height:1.65;max-width:530px}
+.mac-promo__actions{display:flex;flex-wrap:wrap;align-items:center;gap:18px;margin-top:24px;font-size:14px}
+.mac-promo__download{background:var(--accent);color:var(--on-accent);padding:12px 18px;border-radius:8px;font-weight:600}
+.mac-promo__preview img{display:block;width:100%;height:auto;border-radius:12px;border:1px solid var(--rule);box-shadow:0 12px 36px #19152318}
+.mac-promo .mac-promo__requirements{font-size:12px;margin-top:14px}
+@media(max-width:760px){.mac-promo{grid-template-columns:1fr;gap:24px}.mac-nav-link{font-size:12px}.site-header__nav{gap:8px}}
+@media(max-width:520px){.site-header__inner{gap:12px}.wordmark{font-size:20px}.github-link__count{display:none}}
