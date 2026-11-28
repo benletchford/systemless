@@ -1272,27 +1272,64 @@ pub(crate) fn ppc_color_to_index(
         .filter(|handle| *handle != 0)
         .and_then(|handle| ppc_read_ctable_clut(memory, handle, &fallback))
         .unwrap_or(fallback);
-    let wanted = [color.red, color.green, color.blue];
-    if let Some(index) = clut[..entry_count]
-        .iter()
-        .position(|entry| *entry == wanted)
-    {
-        return index as u32;
-    }
+    u32::from(crate::quickdraw::color::nearest_color_index(
+        &clut,
+        [color.red, color.green, color.blue],
+        entry_count,
+    ))
+}
 
-    let mut best_index = 0usize;
-    let mut best_distance = u64::MAX;
-    for (index, entry) in clut[..entry_count].iter().enumerate() {
-        let red = i64::from(entry[0]) - i64::from(color.red);
-        let green = i64::from(entry[1]) - i64::from(color.green);
-        let blue = i64::from(entry[2]) - i64::from(color.blue);
-        let distance = (red * red + green * green + blue * blue) as u64;
-        if distance < best_distance {
-            best_index = index;
-            best_distance = distance;
-        }
+fn ppc_pixel_map_layout(
+    memory: &mut PpcSectionMem,
+    pixmap: u32,
+) -> Option<crate::quickdraw::color::PixelMapLayout> {
+    Some(crate::quickdraw::color::PixelMapLayout {
+        base: memory.read_u32_be(pixmap)?,
+        row_bytes: u32::from(memory.read_u16_be(pixmap.checked_add(4)?)? & 0x3fff),
+        pixel_size: memory.read_u16_be(pixmap.checked_add(32)?)?,
+    })
+}
+
+/// The pixel value `color` resolves to in the indexed colour port `port`,
+/// through the table the shared rule picks: the screen's inverse table or
+/// colour table for a port on the screen, the port's own colour table for an
+/// offscreen one. `None` for a basic port or a direct-colour pixel map.
+pub(crate) fn ppc_port_color_index(
+    memory: &mut PpcSectionMem,
+    port: u32,
+    logical_screen_clut: &[[u16; 3]; 256],
+    color: PpcRgbColor,
+) -> Option<u8> {
+    use crate::quickdraw::color::{nearest_color_index, port_color_table, PortColorTable};
+    if port == 0 || memory.read_u16_be(port.checked_add(6)?)? & 0xc000 != 0xc000 {
+        return None;
     }
-    best_index as u32
+    let pixmap = memory
+        .read_u32_be(port.checked_add(2)?)
+        .filter(|handle| *handle != 0)
+        .and_then(|handle| memory.read_u32_be(handle))
+        .filter(|pixmap| *pixmap != 0)?;
+    let layout = ppc_pixel_map_layout(memory, pixmap)?;
+    if !(1..=8).contains(&layout.pixel_size) {
+        return None;
+    }
+    let screen = ppc_pixel_map_layout(memory, PPC_MAIN_PIXMAP)?;
+    let rgb = [color.red, color.green, color.blue];
+    let entry_count = 1usize << usize::from(layout.pixel_size);
+    Some(match port_color_table(layout, screen) {
+        PortColorTable::ScreenInverseTable => {
+            TrapDispatcher::screen_itable_index(logical_screen_clut, rgb)
+        }
+        PortColorTable::Screen => nearest_color_index(logical_screen_clut, rgb, entry_count),
+        PortColorTable::Own => {
+            let clut = memory
+                .read_u32_be(pixmap.checked_add(42)?)
+                .filter(|handle| *handle != 0)
+                .and_then(|handle| ppc_read_ctable_clut(memory, handle, logical_screen_clut))
+                .unwrap_or(*logical_screen_clut);
+            nearest_color_index(&clut, rgb, entry_count)
+        }
+    })
 }
 
 pub(crate) fn ppc_read_itable_ctable(

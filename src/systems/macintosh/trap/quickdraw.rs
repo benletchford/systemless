@@ -20506,16 +20506,23 @@ impl super::TrapDispatcher {
             0
         };
         let (resolution_clut, screen_itable) = if pixmap != 0 {
-            let base = Self::offscreen_pixmap_base_ptr(bus, pixmap);
-            let row_bytes = (bus.read_word(pixmap + 4) & 0x3FFF) as u32;
-            let pixel_size = bus.read_word(pixmap + 32);
-            let screen_backed = base == self.screen_mode.0
-                && row_bytes == self.screen_mode.1
-                && pixel_size == self.screen_mode.4;
-            if screen_backed {
-                (self.screen_port_matching_clut(), pixel_size == 8)
-            } else {
-                (self.read_port_clut(bus, bus.read_long(pixmap + 42)), false)
+            use crate::quickdraw::color::{port_color_table, PixelMapLayout, PortColorTable};
+            let layout = PixelMapLayout {
+                base: Self::offscreen_pixmap_base_ptr(bus, pixmap),
+                row_bytes: (bus.read_word(pixmap + 4) & 0x3FFF) as u32,
+                pixel_size: bus.read_word(pixmap + 32),
+            };
+            let screen = PixelMapLayout {
+                base: self.screen_mode.0,
+                row_bytes: self.screen_mode.1,
+                pixel_size: self.screen_mode.4,
+            };
+            match port_color_table(layout, screen) {
+                PortColorTable::ScreenInverseTable => (self.screen_port_matching_clut(), true),
+                PortColorTable::Screen => (self.screen_port_matching_clut(), false),
+                PortColorTable::Own => {
+                    (self.read_port_clut(bus, bus.read_long(pixmap + 42)), false)
+                }
             }
         } else {
             (self.screen_port_matching_clut(), self.screen_mode.4 == 8)
@@ -24019,49 +24026,7 @@ impl super::TrapDispatcher {
         rgb: [u16; 3],
         entry_count: usize,
     ) -> u8 {
-        let entry_count = entry_count.clamp(1, 256);
-        let terminal_index = entry_count - 1;
-        // QuickDraw's inverse tables reserve exact white/black for the first
-        // and last CLUT entries when the endpoints are white/black, rather
-        // than returning an arbitrary duplicate color-cube entry. During
-        // fade-to-black steps entry 0 can temporarily equal black too; keep
-        // canonical black drawing pinned to entry 255 in that collapsed case.
-        // Imaging With QuickDraw 1994, p. 4-82
-        // references/executor/src/quickdraw/qColorMgr.cpp (MakeITable)
-        if rgb == [0, 0, 0] && clut[terminal_index] == [0, 0, 0] {
-            return terminal_index as u8;
-        }
-        if rgb == [0xFFFF, 0xFFFF, 0xFFFF] && clut[0] == [0xFFFF, 0xFFFF, 0xFFFF] {
-            return 0;
-        }
-        if rgb == clut[terminal_index] {
-            return terminal_index as u8;
-        }
-        if rgb == clut[0] {
-            return 0;
-        }
-
-        if let Some((index, _)) = clut[..entry_count]
-            .iter()
-            .enumerate()
-            .find(|(_, entry)| **entry == rgb)
-        {
-            return index as u8;
-        }
-
-        let mut best_index = 0u8;
-        let mut best_distance = u64::MAX;
-        for (index, entry) in clut[..entry_count].iter().enumerate() {
-            let dr = i64::from(entry[0]) - i64::from(rgb[0]);
-            let dg = i64::from(entry[1]) - i64::from(rgb[1]);
-            let db = i64::from(entry[2]) - i64::from(rgb[2]);
-            let distance = (dr * dr + dg * dg + db * db) as u64;
-            if distance < best_distance {
-                best_distance = distance;
-                best_index = index as u8;
-            }
-        }
-        best_index
+        crate::quickdraw::color::nearest_color_index(clut, rgb, entry_count)
     }
 
     pub(super) fn build_palette_translation(
