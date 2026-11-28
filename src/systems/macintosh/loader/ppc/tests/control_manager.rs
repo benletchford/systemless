@@ -5315,8 +5315,11 @@ fn custom_definition_lookup_preserves_full_resource_ids_and_builtin_fallbacks() 
     }
 }
 
-#[test]
-fn native_custom_control_executes_a_powerpc_definition_descriptor() {
+/// Loads a NewControl caller whose CDEF is a native PowerPC routine
+/// descriptor that records its four arguments at `VECTOR + 0x80` and counts
+/// its calls at `VECTOR + 0x90`. Returns the loaded application and the
+/// scratch block holding the control's bounds and title.
+fn load_native_powerpc_cdef_caller() -> (PpcLoadedApp, u32) {
     const VECTOR: u32 = 0x0180_0000;
     const MARKER: u32 = VECTOR + 0x80;
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
@@ -5389,6 +5392,14 @@ fn native_custom_control_executes_a_powerpc_definition_descriptor() {
     loaded.cpu.gpr[8] = 0;
     loaded.cpu.gpr[9] = 1;
     loaded.cpu.gpr[10] = 1002 * 16 + 7;
+    (loaded, scratch)
+}
+
+#[test]
+fn native_custom_control_executes_a_powerpc_definition_descriptor() {
+    const VECTOR: u32 = 0x0180_0000;
+    const MARKER: u32 = VECTOR + 0x80;
+    let (mut loaded, _scratch) = load_native_powerpc_cdef_caller();
     let probe = loaded.run_with_hle_imports(512);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.pc, loaded.halt_pc);
@@ -5400,6 +5411,38 @@ fn native_custom_control_executes_a_powerpc_definition_descriptor() {
     assert_eq!(loaded.memory.read_u32_be(MARKER + 12), Some(0));
     assert_eq!(loaded.memory.read_u32_be(MARKER + 16), Some(2));
     assert!(loaded.guest_calls().is_empty());
+}
+
+#[test]
+fn native_definition_without_room_for_its_arguments_restores_the_caller() {
+    // When the parameter area for a native definition can't be written, the
+    // definition is skipped, and the caller still gets its own port,
+    // QDGlobals.thePort, registers and the import's result back.
+    const VECTOR: u32 = 0x0180_0000;
+    const MARKER: u32 = VECTOR + 0x80;
+    const UNUSABLE_STACK: u32 = 0xFFFF_FFF0;
+    let (mut loaded, scratch) = load_native_powerpc_cdef_caller();
+    let caller_port = scratch + 48;
+    let global = scratch + 56;
+    loaded.current_gworld.with_mut(|port| *port = caller_port);
+    loaded.toolbox_startup.init_graf_global_ptr = global;
+    loaded.memory.write_u32_be(global, caller_port).unwrap();
+    loaded.cpu.gpr[1] = UNUSABLE_STACK;
+    let caller_r2 = loaded.cpu.gpr[2];
+
+    let probe = loaded.run_with_hle_imports(512);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    // LR was restored, so the import returned to its caller.
+    assert_eq!(loaded.cpu.pc, loaded.halt_pc);
+    // NewControl's result was delivered.
+    assert_eq!(loaded.cpu.gpr[3], loaded.controls.records()[0].handle);
+    assert_eq!(loaded.cpu.gpr[1], UNUSABLE_STACK);
+    assert_eq!(loaded.cpu.gpr[2], caller_r2);
+    assert_eq!(*loaded.current_gworld, caller_port);
+    assert_eq!(loaded.memory.read_u32_be(global), Some(caller_port));
+    // The definition never ran.
+    assert_eq!(loaded.memory.read_u32_be(MARKER + 16), Some(0));
 }
 
 #[test]

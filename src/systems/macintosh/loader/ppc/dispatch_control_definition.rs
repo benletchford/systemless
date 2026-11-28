@@ -357,6 +357,11 @@ pub(super) fn ppc_definition_continuation(
                 )
             }
         };
+        // Materializing a definition resource can fail and return a nil
+        // handle; never read through it.
+        if definition_handle == 0 {
+            continue;
+        }
         let entry = memory.read_u32_be(definition_handle).unwrap_or(0);
         if entry == 0 {
             continue;
@@ -432,9 +437,12 @@ pub(super) fn ppc_definition_continuation(
                 )
             }
             GuestIsa::PowerPc => {
+                // Without room for the parameter area, skip the remaining
+                // messages. The epilogue below still restores the caller's
+                // port, its QDGlobals word and registers, and delivers the
+                // completion.
                 if install_powerpc_call_arguments(cpu, memory, &arguments).is_none() {
-                    frame.return_lent_bounds(memory);
-                    return None;
+                    break;
                 }
                 GuestCallEffect::call_guest(
                     GuestCallRequest::new(GuestCallTarget {
