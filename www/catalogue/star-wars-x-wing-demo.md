@@ -93,6 +93,19 @@ compatibility:
       is not gameplay qualification for this slice.
     status: broken
     evidence: https://github.com/benletchford/systemless/issues/5953
+  - date: "2026-11-28"
+    tester: Catalogue maintainer
+    systemless_version: "0.129.1"
+    architecture: 68k
+    environment: >-
+      Native headless replay of the unchanged original at the default CPU and
+      display settings. The partial cockpit at frontend tick 804 is an early
+      loading frame. After waiting, the instruments and training maze render.
+      Holding Right moves the maze geometry left compared with a matched idle
+      replay. A separate uninterrupted run passes a gate, scores 100 and
+      continues flying through frontend tick 3804 with zero exhausted frames.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/6818
 runtime:
   executable_path: X-Wing Demo/X-Wing
 artifacts:
@@ -135,7 +148,7 @@ artifacts:
       redistribution restriction was found. Controller files, patches and all original
       game assets remain intact. No performance tips, settings rewrites,
       CPU/display/partition/sound overrides, cheats or unlocks were applied. The game has CODE 0-6 plus
-      a pwpc PEF/cfrg; only the PPC slice has bounded steering qualification.
+      a pwpc PEF/cfrg. Both slices have bounded steering qualification.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -174,5 +187,7 @@ The default flight control uses the mouse; the cursor keys also steer.
 Click to fire, **F** toggles the X-Wing’s S-foils, and **+ / -** adjust throttle.
 
 PowerPC testing verifies training entry, steering and sustained flight in the
-browser. The 68K slice has incomplete cockpit/world rendering. Combat, mission
-completion, persistence and audio fidelity remain unverified.
+browser. Native 68K testing verifies training entry, steering and passage
+through the first gate. On 68K, allow the instruments and maze to finish drawing
+after entering the training door. The convoy mission, mission completion,
+persistence and audio fidelity remain unverified.
