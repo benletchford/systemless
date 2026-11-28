@@ -21331,6 +21331,48 @@ fn copy_bits_converts_between_direct_color_depths() {
     }
 
     #[test]
+    fn nsetpalette_restores_standard_indices_for_prerendered_art() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let window = 0x0020_4120;
+        d.front_window = window;
+
+        let standard_clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let custom_rgb = [0x1234, 0x5678, 0x9ABC];
+        let custom_ctab = make_test_ctab_handle(&mut bus, &[custom_rgb], 1, 0);
+        let custom_palette =
+            d.create_palette_from_ctab(&mut bus, 1, custom_ctab, super::PM_TOLERANT, 0);
+
+        // A game may request the entire system color set in a different
+        // order while keeping sprites pre-rendered in standard CLUT indices.
+        let mut requests = standard_clut;
+        requests.rotate_right(1);
+        let system_ctab = make_test_ctab_handle(&mut bus, &requests, 2, 0);
+        let system_palette =
+            d.create_palette_from_ctab(&mut bus, 256, system_ctab, super::PM_TOLERANT, 0);
+
+        for palette in [custom_palette, system_palette] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, super::PM_ALL_UPDATES as u16);
+            bus.write_long(TEST_SP + 2, palette);
+            bus.write_long(TEST_SP + 6, window);
+            d.dispatch_quickdraw(true, 0x295, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            if palette == custom_palette {
+                assert_eq!(d.device_clut[16], custom_rgb);
+            }
+        }
+
+        assert_eq!(*d.device_clut, standard_clut);
+        for (entry, _) in requests.iter().enumerate() {
+            assert_eq!(
+                d.palette_device_indices[&(system_palette, entry as u16)],
+                entry.wrapping_sub(1) as u8,
+            );
+        }
+    }
+
+    #[test]
     fn activatepalette_invalidates_windows_according_to_their_update_modes() {
         let (mut d, mut cpu, mut bus) = setup();
         let front = bus.alloc(256);
