@@ -7,6 +7,7 @@ developer: Sierra On-Line
 year: 1996
 architectures:
 - 68k
+- ppc
 default_architecture: 68k
 category: Puzzle
 compatibility:
@@ -47,7 +48,18 @@ compatibility:
       No unchanged retry or longer-wait qualification. Browser launch stays disabled.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/6217
+  - date: "2026-11-28"
+    tester: Catalogue maintainer
+    systemless_version: 0.129.1 native
+    architecture: ppc
+    environment: >-
+      The original archive reaches the English Beaver Dam puzzle at 800×600
+      with 256 colours. The beaver responds to pointer steering in a paired
+      replay with isolated saves. Both runs complete 1,924 frontend ticks.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/6807
 runtime:
+  screen_depth: 8
   executable_path: Time Warp of Dr. Brain/Dr. Brain
 artifacts:
 - id: archive
@@ -72,7 +84,7 @@ artifacts:
       affirmative publisher or artwork licence grant. No explicit restriction on sharing the
       intact game demo was identified in the reviewed notices. Retain every original
       file, notice and demo limit.
-    notes: "Preserved complete StuffIt archive; wrapper not claimed publisher-authored. All 759 file paths, 1518 raw forks and 759 Finder records exactly match the full demo folder on MacAddict 008 April 1997. Period ISO size and published SHA1 verified. Production packing independently matches every file, raw fork and Finder record against unar/lsar with strict EOF. Six standard Mac UI/string/version resources reviewed without errors; all three Microsoft Write ReadMes contain complete 13-byte version text. VER.TXT, full DirectX license, both Japanese driver notices decoded as cp932 and full MacAddict root ReadMe were read. DirectX prohibits standalone redistributable-code distribution; its original Windows components remain inside the complete received demo, without component stripping or repackaging. Original classic and PowerPC executable code is preserved. Only classic play is currently offered: the default native PowerPC path stops at the original 256-colour monitor requirement, with no display override used. No opaque PGF/ScriptO or game instructions decoded. No files modified, replaced or reconstructed."
+    notes: "Preserved complete StuffIt archive; wrapper not claimed publisher-authored. All 759 file paths, 1518 raw forks and 759 Finder records exactly match the full demo folder on MacAddict 008 April 1997. Period ISO size and published SHA1 verified. Production packing independently matches every file, raw fork and Finder record against unar/lsar with strict EOF. Six standard Mac UI/string/version resources reviewed without errors; all three Microsoft Write ReadMes contain complete 13-byte version text. VER.TXT, full DirectX license, both Japanese driver notices decoded as cp932 and full MacAddict root ReadMe were read. DirectX prohibits standalone redistributable-code distribution; its original Windows components remain inside the complete received demo, without component stripping or repackaging. Original classic and PowerPC executable code is preserved. No opaque PGF/ScriptO or game instructions decoded. No files modified, replaced or reconstructed."
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -105,6 +117,6 @@ references:
 
 Play the original Macintosh **The Time Warp of Dr. Brain** demo. Choose **English**, then move the pointer through the river to steer Beaver Brain.
 
-The original demo is available to download.
+The original demo is available to download. For native PowerPC play, set the display to 256 colours (8-bit).
 
 ![Beaver Brain swimming across the river](https://assets.systemless.org/catalogue/media/sha256/86/862d2d6c91fb553e2c8834ef6c565abe4f559c971404764e973927baac5270a1.png)
