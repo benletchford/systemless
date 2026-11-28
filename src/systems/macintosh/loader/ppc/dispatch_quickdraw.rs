@@ -370,20 +370,16 @@ pub(super) fn dispatch_quickdraw_import(
             };
             if let Some(color) = ppc_read_rgb_color(memory, color_ptr) {
                 *quickdraw_fore_color = color;
-                let main_8bpp = current_gdevice == PPC_MAIN_GDEVICE
-                    && ppc_current_gdevice_record(memory, current_gdevice)
-                        .and_then(|gdevice| memory.read_u32_be(gdevice.checked_add(22)?))
-                        .and_then(|handle| memory.read_u32_be(handle))
-                        .and_then(|pixmap| memory.read_u16_be(pixmap.checked_add(32)?))
-                        == Some(8);
-                if main_8bpp {
-                    quickdraw_fore_indices.insert(
-                        current_gworld,
-                        ppc_color_to_index(memory, current_gdevice, color_manager_clut, color)
-                            as u8,
-                    );
-                } else {
-                    quickdraw_fore_indices.remove(&current_gworld);
+                // The port's fgColor pixel (Imaging With QuickDraw (1994),
+                // p. 4-70), matched through the port's own table when it's
+                // offscreen, as on 68K.
+                match ppc_port_color_index(memory, current_gworld, color_manager_clut, color) {
+                    Some(index) => {
+                        quickdraw_fore_indices.insert(current_gworld, index);
+                    }
+                    None => {
+                        quickdraw_fore_indices.remove(&current_gworld);
+                    }
                 }
                 let _ = ppc_write_port_rgb_color(
                     memory,
@@ -408,22 +404,17 @@ pub(super) fn dispatch_quickdraw_import(
             };
             if let Some(color) = ppc_read_rgb_color(memory, color_ptr) {
                 *quickdraw_back_color = color;
-                let main_8bpp = current_gdevice == PPC_MAIN_GDEVICE
-                    && ppc_current_gdevice_record(memory, current_gdevice)
-                        .and_then(|gdevice| memory.read_u32_be(gdevice.checked_add(22)?))
-                        .and_then(|handle| memory.read_u32_be(handle))
-                        .and_then(|pixmap| memory.read_u16_be(pixmap.checked_add(32)?))
-                        == Some(8);
-                if main_8bpp {
-                    toolbox_startup.quickdraw_back_indices.insert(
-                        current_gworld,
-                        ppc_color_to_index(memory, current_gdevice, color_manager_clut, color)
-                            as u8,
-                    );
-                } else {
-                    toolbox_startup
-                        .quickdraw_back_indices
-                        .remove(&current_gworld);
+                match ppc_port_color_index(memory, current_gworld, color_manager_clut, color) {
+                    Some(index) => {
+                        toolbox_startup
+                            .quickdraw_back_indices
+                            .insert(current_gworld, index);
+                    }
+                    None => {
+                        toolbox_startup
+                            .quickdraw_back_indices
+                            .remove(&current_gworld);
+                    }
                 }
                 let _ = ppc_write_port_rgb_color(
                     memory,

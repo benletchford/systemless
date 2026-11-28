@@ -4482,11 +4482,19 @@ pub(crate) fn ppc_qt_close_movie_file(cpu: &mut PpcCpu, quicktime: &mut PpcQuick
     PPC_NO_ERR
 }
 
-pub(crate) fn ppc_qt_set_movie_gworld(cpu: &mut PpcCpu, quicktime: &mut PpcQuickTimeState) -> i16 {
+pub(crate) fn ppc_qt_set_movie_gworld(
+    cpu: &mut PpcCpu,
+    quicktime: &mut PpcQuickTimeState,
+    current_gworld: u32,
+) -> i16 {
     if cpu.gpr[3] != PPC_QT_MOVIE || quicktime.movie_disposed {
         return PPC_PARAM_ERR;
     }
-    quicktime.movie_gworld = cpu.gpr[4];
+    quicktime.movie_gworld = if cpu.gpr[4] == 0 {
+        current_gworld
+    } else {
+        cpu.gpr[4]
+    };
     quicktime.movie_gdevice = cpu.gpr[5];
     PPC_NO_ERR
 }

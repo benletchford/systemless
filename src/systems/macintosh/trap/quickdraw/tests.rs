@@ -11286,6 +11286,25 @@
     }
 
     #[test]
+    fn wrapped_round_rect_is_empty_in_68k_traps() {
+        for trap in [0x0B0, 0x0B1] {
+            let (mut d, mut cpu, mut bus) = setup_with_port();
+            let rect_ptr = 0x300000;
+            write_rect(&mut bus, rect_ptr, i16::MAX, 232, -32743, 320);
+            bus.write_word(TEST_SP, 16);
+            bus.write_word(TEST_SP + 2, 16);
+            bus.write_long(TEST_SP + 4, rect_ptr);
+
+            let screen_base = bus.read_long(0x0824);
+            let before = bus.read_bytes(screen_base, 64 * 342);
+            let result = d.dispatch_quickdraw(true, trap, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+            assert_eq!(bus.read_bytes(screen_base, 64 * 342), before);
+        }
+    }
+
+    #[test]
     fn test_erase_round_rect() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let rect_ptr = 0x300000u32;
@@ -21324,6 +21343,48 @@ fn copy_bits_converts_between_direct_color_depths() {
         assert_eq!(d.device_clut[255], [0; 3]);
         assert_eq!(d.device_clut[200], background_color);
         assert_eq!(d.color_manager_clut[200], background_color);
+    }
+
+    #[test]
+    fn nsetpalette_restores_standard_indices_for_prerendered_art() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let window = 0x0020_4120;
+        d.front_window = window;
+
+        let standard_clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let custom_rgb = [0x1234, 0x5678, 0x9ABC];
+        let custom_ctab = make_test_ctab_handle(&mut bus, &[custom_rgb], 1, 0);
+        let custom_palette =
+            d.create_palette_from_ctab(&mut bus, 1, custom_ctab, super::PM_TOLERANT, 0);
+
+        // A game may request the entire system color set in a different
+        // order while keeping sprites pre-rendered in standard CLUT indices.
+        let mut requests = standard_clut;
+        requests.rotate_right(1);
+        let system_ctab = make_test_ctab_handle(&mut bus, &requests, 2, 0);
+        let system_palette =
+            d.create_palette_from_ctab(&mut bus, 256, system_ctab, super::PM_TOLERANT, 0);
+
+        for palette in [custom_palette, system_palette] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, super::PM_ALL_UPDATES as u16);
+            bus.write_long(TEST_SP + 2, palette);
+            bus.write_long(TEST_SP + 6, window);
+            d.dispatch_quickdraw(true, 0x295, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            if palette == custom_palette {
+                assert_eq!(d.device_clut[16], custom_rgb);
+            }
+        }
+
+        assert_eq!(*d.device_clut, standard_clut);
+        for (entry, _) in requests.iter().enumerate() {
+            assert_eq!(
+                d.palette_device_indices[&(system_palette, entry as u16)],
+                entry.wrapping_sub(1) as u8,
+            );
+        }
     }
 
     #[test]

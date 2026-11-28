@@ -35,6 +35,17 @@ compatibility:
       not PPC gameplay. No unchanged retry.
     status: broken
     evidence: https://github.com/benletchford/systemless/issues/6230
+  - date: "2026-11-28"
+    tester: Catalogue maintainer
+    systemless_version: 4d85fa829 native
+    architecture: ppc
+    environment: >-
+      The original archive at default display and partition settings reaches the
+      menu and the demo level in an isolated headless replay. Holding D moves
+      the character right and scrolls the scene compared with a replay that
+      omits the input. Level completion and browser play remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/6803
 runtime:
   executable_path: Skullcracker Demo/Skull
 artifacts:
@@ -104,4 +115,4 @@ references:
 
 Choose **Begin** to enter the demo level. Move with **W/A/S/D**; use **J** to jump, **K** to kick, **P** to punch and **I** for inventory. The original **Help** screen shows the controls.
 
-This is the complete original Macintosh promotional demo. The verified native path uses its 68K version; the PowerPC version currently stops at a startup error.
+This is the complete original Macintosh promotional demo. Both the 68K and PowerPC versions reach the demo level and respond to movement controls in native testing.

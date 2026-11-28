@@ -134,6 +134,9 @@ pub mod addr {
     /// Inside Macintosh Volume II, II-234; Volume III, III-166.
     pub const SOUND_LEVEL: u32 = 0x027F;
 
+    /// MinusOne: all-ones longword seeded by the Macintosh ROM at boot.
+    pub const MINUS_ONE: u32 = 0x0A06;
+
     // Menu Manager globals
     /// TopMenuItem: global vertical coordinate of the first item in the
     /// currently active scrollable menu (word).

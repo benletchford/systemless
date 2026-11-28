@@ -13,7 +13,20 @@ architectures:
 default_architecture: 68k
 category: Arcade
 compatibility:
-  status: unknown
+  status: playable
+  verified:
+  - date: "2026-11-28"
+    tester: Catalogue maintainer
+    systemless_version: "0.129.1"
+    architecture: 68k
+    environment: >-
+      An isolated native headless replay of the original StuffIt archive at
+      800 by 600 reached Wave 1, rendered the ship, crystals, score and timer,
+      and registered a crystal pickup after mouse steering. The matched idle
+      replay kept the score at zero. Full wave completion and browser pacing
+      remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/6795
 runtime:
   executable_path: Crystal Crazy Demo/Crystal Crazy
 artifacts:
@@ -61,7 +74,7 @@ references:
 The complete original v1.0.4 demo preserves the sequel's graphics, sounds and
 external object files.
 
-In a native run with the original guest defaults, Continue reaches the demo title.
-Starting the game reaches the first-wave instruction, then a blank grey playfield.
-Gameplay and browser pacing remain unverified. Browser launch stays disabled while
-[the rendering issue](https://github.com/benletchford/systemless/issues/6070) is open.
+In native 68k testing, Continue opens the demo title. Starting the game enters
+Wave 1 with visible sprites and a readable score and timer. Steering with the
+mouse collects crystals and increases the score. Browser launch remains disabled
+pending browser qualification.

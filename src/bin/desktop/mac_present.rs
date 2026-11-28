@@ -37,6 +37,12 @@ impl Presenter {
             p.set_transactional_presentation(enabled);
         }
     }
+    pub(super) fn transactional_presentation(&self) -> bool {
+        match self {
+            Self::Metal(p) => p.transactional_presentation(),
+            Self::Software(_) => false,
+        }
+    }
     pub(super) fn supports_compact(&self) -> bool {
         match self {
             Self::Metal(p) => p.supports_compact(),

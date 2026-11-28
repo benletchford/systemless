@@ -1228,6 +1228,7 @@ pub(crate) fn dispatch_supported_import(
             current_resource_refnum: *current_resource_refnum,
             gworlds,
             current_gworld: *current_gworld,
+            current_gdevice: *current_gdevice,
             quicktime,
             sound,
         },
@@ -1679,6 +1680,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DeactivateControl
         | PpcImportDispatcherTarget::IsControlActive
         | PpcImportDispatcherTarget::CollapseWindow
+        | PpcImportDispatcherTarget::IsWindowCollapsable
         | PpcImportDispatcherTarget::IsWindowCollapsed
         | PpcImportDispatcherTarget::UnregisterAppearanceClient
         | PpcImportDispatcherTarget::SetControlFontStyle => {
@@ -1707,6 +1709,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::HoldMemory
         | PpcImportDispatcherTarget::UnholdMemory
         | PpcImportDispatcherTarget::DisposeHandle
+        | PpcImportDispatcherTarget::NewEmptyHandle
         | PpcImportDispatcherTarget::EmptyHandle
         | PpcImportDispatcherTarget::ReallocateHandle
         | PpcImportDispatcherTarget::GetHandleSize

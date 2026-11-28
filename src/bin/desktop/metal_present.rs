@@ -772,6 +772,38 @@ fn display_metal_device() -> Option<Retained<ProtocolObject<dyn MTLDevice>>> {
     unsafe { Retained::from_raw(CGDirectDisplayCopyCurrentMetalDevice(CGMainDisplayID())) }
 }
 
+/// An opaque Core Graphics colour, passed by reference to `CALayer`.
+#[repr(C)]
+struct CGColor {
+    _private: [u8; 0],
+}
+
+// SAFETY: `CGColorRef` is a pointer to the opaque `struct CGColor`, which is
+// how the Objective-C runtime encodes `CALayer.backgroundColor`.
+unsafe impl objc2::RefEncode for CGColor {
+    const ENCODING_REF: objc2::Encoding =
+        objc2::Encoding::Pointer(&objc2::Encoding::Struct("CGColor", &[]));
+}
+
+/// Give `layer` an opaque black background (`CALayer.backgroundColor`).
+fn set_layer_background_black(layer: &CAMetalLayer) {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGColorCreateGenericGray(gray: f64, alpha: f64) -> *mut CGColor;
+        fn CGColorRelease(color: *mut CGColor);
+    }
+    // SAFETY: CGColorCreateGenericGray returns a +1 reference or null. The
+    // layer retains the colour it is given, so ours is released afterwards.
+    unsafe {
+        let black = CGColorCreateGenericGray(0.0, 1.0);
+        if black.is_null() {
+            return;
+        }
+        let _: () = msg_send![layer, setBackgroundColor: black];
+        CGColorRelease(black);
+    }
+}
+
 impl MetalPresenter {
     pub fn new(window: Rc<Window>) -> Result<Self, String> {
         MainThreadMarker::new()
@@ -819,6 +851,12 @@ impl MetalPresenter {
         // complete pre-dialog frame remains stationary until the resize
         // callback submits its replacement.
         layer.setContentsGravity(unsafe { kCAGravityBottom });
+        // That gravity leaves the layer's edges uncovered whenever its bounds
+        // run ahead of the drawable, as they do on every step of a live
+        // resize. Fill them with the black the presenter clears its margins
+        // to, rather than letting the window's background show through as
+        // bars at the edges.
+        set_layer_background_black(&layer);
         layer.setFrame(root_layer.bounds());
         layer.setAutoresizingMask(
             CAAutoresizingMask::kCALayerWidthSizable | CAAutoresizingMask::kCALayerHeightSizable,
@@ -938,6 +976,11 @@ impl MetalPresenter {
     /// transaction. This is used only while an AppKit window-frame mutation
     /// is in flight; normal gameplay keeps the lower-latency asynchronous
     /// Metal presentation path.
+    /// Whether presentations currently join the Core Animation transaction.
+    pub fn transactional_presentation(&self) -> bool {
+        unsafe { self.layer.presentsWithTransaction() }
+    }
+
     pub fn set_transactional_presentation(&self, enabled: bool) {
         if enabled {
             self.async_guest_presenter.pause_and_wait();

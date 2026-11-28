@@ -302,7 +302,38 @@ pub(super) fn dispatch_cursor_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DisposeCCursor => {
-            let _params = crate::cursor_manager::evaluate_dispose_ccursor_parameters(cpu.gpr[3]);
+            let params = crate::cursor_manager::evaluate_dispose_ccursor_parameters(cpu.gpr[3]);
+            let handle = params.cursor_handle;
+            if let Some(cursor) = process_memory_manager
+                .native_allocation(handle)
+                .filter(|record| {
+                    record.ptr != 0
+                        && record.size == 96
+                        && !vfs_resources.iter().any(|resource| resource.handle == handle)
+                })
+            {
+                let map_handle = memory.read_u32_be(cursor.ptr + 2).unwrap_or(0);
+                let pixels = memory.read_u32_be(cursor.ptr + 6).unwrap_or(0);
+                let table = process_memory_manager
+                    .native_allocation(map_handle)
+                    .filter(|record| record.ptr != 0 && record.size == 50)
+                    .and_then(|record| memory.read_u32_be(record.ptr + 42))
+                    .unwrap_or(0);
+                for owned in [table, pixels, map_handle, handle]
+                    .into_iter()
+                    .filter(|owned| *owned != 0)
+                {
+                    let _ = ppc_dispose_process_native_handle(
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        owned,
+                    );
+                }
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         _ => None,
@@ -332,6 +363,56 @@ fn ppc_get_ccursor(
         *last_resource_error = PPC_RES_NOT_FOUND_ERR;
         return 0;
     };
+    let data = &vfs_resources[index].data;
+    if let Some((cursor, pixmap, pixels, table)) = compiled_cursor_parts(data) {
+        let mut allocated = [0; 4];
+        for (handle, bytes) in allocated.iter_mut().zip([cursor, pixmap, pixels, table]) {
+            *handle = ppc_process_alloc_handle_with_bytes(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                bytes,
+            );
+            if *handle == 0 {
+                break;
+            }
+        }
+        let [cursor_handle, map_handle, pixel_handle, table_handle] = allocated;
+        let patched = (|| {
+            if allocated.contains(&0) {
+                return None;
+            }
+            let cursor = memory.read_u32_be(cursor_handle)?;
+            let map = memory.read_u32_be(map_handle)?;
+            let pixels = memory.read_u32_be(pixel_handle)?;
+            memory.write_u32_be(cursor + 2, map_handle)?;
+            memory.write_u32_be(cursor + 6, pixel_handle)?;
+            memory.write_u32_be(cursor + 10, 0)?;
+            memory.write_u16_be(cursor + 14, 0)?;
+            memory.write_u32_be(cursor + 16, 0)?;
+            memory.write_u32_be(map, pixels)?;
+            memory.write_u32_be(map + 42, table_handle)
+        })();
+        if patched.is_some() {
+            *last_resource_error = PPC_NO_ERR;
+            return cursor_handle;
+        }
+        for handle in allocated.into_iter().filter(|handle| *handle != 0) {
+            let _ = ppc_dispose_process_native_handle(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                handle,
+            );
+        }
+        *last_mem_error = PPC_MEM_FULL_ERR;
+        return 0;
+    }
     ppc_materialize_vfs_resource_handle(
         process_memory_manager,
         memory,
@@ -344,6 +425,35 @@ fn ppc_get_ccursor(
         true,
         last_resource_error,
     )
+}
+
+/// Compiled crsr resources store offsets where the live CCrsr and PixMap
+/// records store handles. Validate the ranges before allocating guest objects.
+fn compiled_cursor_parts(data: &[u8]) -> Option<(&[u8], &[u8], &[u8], &[u8])> {
+    let cursor = data.get(..96)?;
+    if !matches!(cursor[..2], [0x80, 0x00] | [0x80, 0x01]) {
+        return None;
+    }
+    let offset = |bytes: &[u8]| u32::from_be_bytes(bytes.try_into().unwrap()) as usize;
+    let map_start = offset(&cursor[2..6]);
+    let pixels_start = offset(&cursor[6..10]);
+    let map_end = map_start.checked_add(50)?;
+    if map_start < cursor.len() || pixels_start < map_end {
+        return None;
+    }
+    let map = data.get(map_start..map_end)?;
+    let table_start = offset(&map[42..46]);
+    let pixels = data.get(pixels_start..table_start)?;
+    if pixels.is_empty() {
+        return None;
+    }
+    let table = data.get(table_start..)?;
+    let last_entry = u16::from_be_bytes(table.get(6..8)?.try_into().ok()?);
+    if last_entry > 255 {
+        return None;
+    }
+    let table = table.get(..8 + (usize::from(last_entry) + 1) * 8)?;
+    Some((cursor, map, pixels, table))
 }
 
 fn ppc_get_cicon(

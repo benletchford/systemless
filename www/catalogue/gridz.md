@@ -52,6 +52,19 @@ compatibility:
       visibly corrupted; 68K gameplay is unverified.
     status: broken
     evidence: https://github.com/benletchford/systemless/pull/4229
+  - date: "2026-11-27"
+    tester: Catalogue maintainer
+    systemless_version: 0.129.1 with merged 68K picture line mode fix
+    architecture: 68k
+    environment: >-
+      Isolated headless replay of the intact installer at 800 by 600 and 256
+      colours reached player setup and a live board. Holding Up, Right, and
+      Space changed the board compared with an equal-duration idle replay.
+      Basilisk II running Mac OS 8.1 displayed the same striped 68K board
+      graphics and comparable board movement. Full matches, save/restart, and
+      68K browser play remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/6778
 artifacts:
 - id: archive
   role: archive
@@ -108,8 +121,8 @@ and data.
 
 The PowerPC version reaches a new game and accepts a board click in bounded
 native and headless browser testing against the hosted installer. Longer play
-and save/restart still require validation. The
-68K version currently has corrupted title rendering. Browser launch remains
-disabled while qualification continues.
+and save/restart still require validation. The 68K version also reaches a live
+board and responds to keyboard input in native testing. Its striped board
+graphics match the 68K version running under Mac OS 8.1.
 
 ![Gridz PowerPC board after a click](https://assets.systemless.org/catalogue/media/sha256/d6/d68bb1fa60e2c0f10c2e3020a46c9c20286e7744b7944116e157086f88ecde46.png)
