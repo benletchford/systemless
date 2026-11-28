@@ -5680,6 +5680,7 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::A7, sp + 10);
                     return Some(Ok(()));
                 }
+                let previous_palette = self.window_palette_handle_exact(window);
                 self.set_window_palette_association(window, palette, updates);
                 if window == DEFAULT_PALETTE_WINDOW {
                     // A dstWindow of (WindowPtr)-1 does not name a window: it
@@ -5695,11 +5696,12 @@ impl super::TrapDispatcher {
                         bus,
                         window,
                         palette,
+                        previous_palette,
                         " default",
                         "nsetpalette_default_palette",
                     );
                 } else {
-                    self.activate_associated_palette_for_window(bus, window);
+                    self.activate_associated_window_palette(bus, window, previous_palette);
                 }
                 cpu.write_reg(Register::A7, sp + 10);
                 Ok(())
@@ -17394,6 +17396,7 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         window: u32,
         palette_handle: u32,
+        previous_palette: u32,
         trace_label: &str,
         trace_seed_label: &str,
     ) {
@@ -17414,6 +17417,30 @@ impl super::TrapDispatcher {
         // already drawn by visible background windows, even though their
         // palettes did not request or receive a redraw.
         let mut updated_clut = current_clut;
+        if self.screen_mode.4 == 8
+            && previous_palette != 0
+            && previous_palette != palette_handle
+            && !self.window_palettes.values().any(|&(handle, _)| handle == previous_palette)
+        {
+            // Replacing a palette releases its tolerant allocations. Restore
+            // the system colors only where that palette still owns the
+            // installed RGB, preserving subsequent direct device writes.
+            let default_clut = Self::standard_mac_8bpp_clut();
+            for (&(handle, entry), &slot) in &self.palette_device_indices {
+                let slot = usize::from(slot);
+                if handle == previous_palette
+                    && !self.clut_reserved[slot]
+                    && !self.clut_protected[slot]
+                    && Self::read_palette_color_info(bus, handle, entry)
+                        .is_some_and(|(rgb, usage, _)| {
+                            usage & (PM_TOLERANT | PM_EXPLICIT | PM_ANIMATED) == PM_TOLERANT
+                                && rgb == current_clut[slot]
+                        })
+                {
+                    updated_clut[slot] = default_clut[slot];
+                }
+            }
+        }
         self.palette_device_indices
             .retain(|(palette, _), _| *palette != palette_handle);
         let mut claimed = [false; 256];
@@ -17504,11 +17531,10 @@ impl super::TrapDispatcher {
                 .insert((palette_handle, index as u16), device_index as u8);
         }
 
-        // Tolerant colors are allocated unique device indices in palette
-        // order. Their palette positions are logical entry numbers, not CLUT
-        // indices. The selected cell changes only when its current color is
-        // farther away than the entry tolerance. Inside Macintosh Volume V
-        // (1986), V-160..V-162; Volume VI (1991), 20-9 and 20-15.
+        // Reuse a color within tolerance before replacing a device entry.
+        // Reserve those matches before allocating new colors, so later
+        // replacements cannot invalidate a mapping from the same palette.
+        let mut unmatched = Vec::new();
         for index in 0..palette_entries {
             let color_info = Self::palette_color_info_ptr(palette_ptr, index as u32);
             let usage = bus.read_word(color_info + 6) as i16;
@@ -17521,39 +17547,37 @@ impl super::TrapDispatcher {
                 bus.read_word(color_info + 4),
             ];
             let tolerance = bus.read_word(color_info + 8);
-
-            let endpoint = if requested == [0xFFFF; 3] && current_clut[0] == requested {
-                Some(0usize)
-            } else if requested == [0; 3] && current_clut[255] == requested {
-                Some(255usize)
-            } else {
-                None
-            };
-            let device_index = endpoint.or_else(|| {
-                PM_8BPP_ALLOCATION_ORDER
-                    .iter()
-                    .map(|&candidate| usize::from(candidate))
-                    .find(|&candidate| !claimed[candidate])
-            });
-            let Some(device_index) = device_index else {
-                // Unsatisfied requests fall back to courteous matching.
-                continue;
-            };
-            claimed[device_index] = true;
-            installed[device_index] = true;
-            self.palette_device_indices
-                .insert((palette_handle, index as u16), device_index as u8);
-
-            let present = current_clut[device_index];
+            let closest = usize::from(Self::nearest_palette_index(&updated_clut, requested));
             let difference = requested
                 .into_iter()
-                .zip(present)
+                .zip(updated_clut[closest])
                 .map(|(wanted, have)| wanted.abs_diff(have))
                 .max()
                 .unwrap_or(0);
-            if difference > tolerance {
-                updated_clut[device_index] = requested;
+            if difference <= tolerance {
+                claimed[closest] = true;
+                installed[closest] = true;
+                self.palette_device_indices
+                    .insert((palette_handle, index as u16), closest as u8);
+            } else {
+                unmatched.push((index, requested));
             }
+        }
+        for (index, requested) in unmatched {
+            let Some(device_index) = PM_8BPP_ALLOCATION_ORDER
+                .iter()
+                .copied()
+                .find(|&candidate| !claimed[usize::from(candidate)])
+            else {
+                // Unsatisfied requests fall back to courteous matching.
+                continue;
+            };
+            let slot = usize::from(device_index);
+            claimed[slot] = true;
+            installed[slot] = true;
+            updated_clut[slot] = requested;
+            self.palette_device_indices
+                .insert((palette_handle, index as u16), device_index);
         }
         // The Palette Manager compares requests with the device's own
         // ColorTable (gdPMap^^.pmTable), not with a private shadow. Some
@@ -17796,6 +17820,7 @@ impl super::TrapDispatcher {
             bus,
             window,
             palette_handle,
+            0,
             "",
             "activate_palette_for_window",
         );
@@ -17807,6 +17832,15 @@ impl super::TrapDispatcher {
         &mut self,
         bus: &mut MacMemoryBus,
         window: u32,
+    ) {
+        self.activate_associated_window_palette(bus, window, 0);
+    }
+
+    fn activate_associated_window_palette(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        window: u32,
+        previous_palette: u32,
     ) {
         if window == 0 {
             return;
@@ -17832,6 +17866,7 @@ impl super::TrapDispatcher {
             bus,
             window,
             palette_handle,
+            previous_palette,
             " exact",
             "activate_associated_palette_for_window",
         );
