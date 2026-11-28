@@ -12,8 +12,22 @@ architectures:
 default_architecture: 68k
 category: Arcade
 compatibility:
-  status: boots
+  status: playable
   verified:
+  - date: "2026-11-28"
+    tester: Catalogue maintainer
+    systemless_version: 0.129.1 native
+    architecture: 68k
+    environment: >-
+      Optimized native 68k headless replay of the unchanged 2.0.1 StuffIt
+      archive, at 800×600 and 256 colours with isolated save state. Later and
+      Play open level one. Held J moves Koji left, O jumps across the arena,
+      and Space extends the red tongue. The matched replay without Space
+      keeps the tongue sample clear. Both replays pass eight measured pixel
+      assertions at 1573 frontend ticks with zero exhausted frames. Level
+      completion, save behavior and current browser pacing remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/6822
   - date: "2026-10-04"
     tester: Catalogue maintainer
     systemless_version: 0.75.0 + deterministic play runner and 0.76.1 release browser build
