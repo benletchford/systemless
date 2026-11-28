@@ -1,5 +1,6 @@
 //! Resource Manager and File Manager trap handlers.
 
+use crate::systems::macintosh::file_manager;
 use crate::cpu::{CpuOps, Register};
 use crate::loader::CodeSegmentHeader;
 use crate::gestalt_manager::{
@@ -4040,7 +4041,8 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::D0, (-44i32) as u32);
                         return Some(Ok(()));
                     }
-                    let writable = matches!(permission, 0 | 2 | 3 | 4) && !read_only;
+                    let writable =
+                        file_manager::permission_grants_write(i16::from(permission), !read_only);
                     let refnum = match self.allocate_data_file_fcb(bus, &vfs_name, writable) {
                         Ok(refnum) => refnum,
                         Err(err) => {
@@ -6687,7 +6689,8 @@ impl super::TrapDispatcher {
                                     .open_files
                                     .iter()
                                     .any(|open| open.path.eq_ignore_ascii_case(&vfs_name));
-                            let wants_write = current_write || matches!(permission, 2 | 3 | 4);
+                            let wants_write = current_write
+                                || file_manager::permission_requests_write(permission);
                             if wants_write && read_only {
                                 bus.write_word(sp + 10, (-44i16) as u16); // wPrErr
                                 cpu.write_reg(Register::A7, sp + 10);
@@ -6769,7 +6772,8 @@ impl super::TrapDispatcher {
                                 .open_files
                                 .iter()
                                 .any(|open| open.path.eq_ignore_ascii_case(&rsrc_key));
-                        let wants_write = current_write || matches!(permission, 2 | 3 | 4);
+                        let wants_write =
+                            current_write || file_manager::permission_requests_write(permission);
 
                         if wants_write && read_only {
                             bus.write_word(sp + 10, (-44i16) as u16); // wPrErr
@@ -8105,7 +8109,7 @@ impl super::TrapDispatcher {
                         // ioPermssn values as PBOpen. Record the granted
                         // write access so later PBWrite/PBSetEOF calls honor
                         // the open mode.
-                        if matches!(permission, 0 | 2 | 3 | 4) {
+                        if file_manager::permission_grants_write(i16::from(permission), true) {
                             self.write_refnums.insert(refnum);
                         }
                         self.file_positions.insert(refnum, 0);

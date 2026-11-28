@@ -102,3 +102,43 @@ mod tests {
         );
     }
 }
+
+/// fsCurPerm: whatever permission is allowed.
+pub(crate) const FS_CUR_PERM: u8 = 0;
+
+/// Whether an open's `ioPermssn` explicitly asks to write: fsWrPerm (2),
+/// fsRdWrPerm (3) or fsRdWrShPerm (4). The File Manager has no write-only
+/// access, so fsWrPerm is read/write too. Such a request on a locked volume
+/// fails rather than falling back to read-only. Inside Macintosh: Files
+/// (1992), pp. 2-7--2-8.
+pub(crate) fn permission_requests_write(permission: i16) -> bool {
+    matches!(permission, 2..=4)
+}
+
+/// Whether an access path opened with `permission` can write, given whether
+/// the file can be written at all. fsCurPerm requests "whatever permission is
+/// currently allowed": read/write when available, otherwise read-only
+/// (Files, p. 2-8).
+pub(crate) fn permission_grants_write(permission: i16, file_writable: bool) -> bool {
+    file_writable && (permission == i16::from(FS_CUR_PERM) || permission_requests_write(permission))
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+
+    #[test]
+    fn current_permission_writes_when_it_can_and_read_permission_never_does() {
+        for permission in 0..=4i16 {
+            assert_eq!(permission_requests_write(permission), permission >= 2);
+            assert!(!permission_grants_write(permission, false));
+        }
+        assert!(permission_grants_write(i16::from(FS_CUR_PERM), true));
+        assert!(!permission_grants_write(1, true)); // fsRdPerm
+        assert!(permission_grants_write(4, true)); // fsRdWrShPerm
+
+        // A byte that isn't a permission, such as a vRefNum's low byte.
+        assert!(!permission_grants_write(0xFF, true));
+        assert!(!permission_grants_write(-1, true));
+    }
+}

@@ -3556,12 +3556,6 @@ pub(super) fn ppc_wrap_quilt_raw_pict_frames(resources: &mut [PpcVfsResourceReco
     }
 }
 
-pub(super) fn ppc_file_permission_allows_writing(permission: u8) -> bool {
-    // Inside Macintosh: Files (1992), pp. 2-7--2-8: fsCurPerm grants
-    // read/write when available, and fsWrPerm is synonymous with fsRdWrPerm.
-    matches!(permission, 0 | 2 | 3 | 4)
-}
-
 pub(super) fn ppc_fsp_open_df(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
@@ -3608,7 +3602,8 @@ pub(super) fn ppc_fsp_open_df(
         path,
         position: 0,
     });
-    if ppc_file_permission_allows_writing(permission) {
+    if crate::systems::macintosh::file_manager::permission_grants_write(i16::from(permission), true)
+    {
         writable_refnums.insert(ref_num as u16);
     }
     *next_file_ref_num = next_ref_num;
@@ -3729,7 +3724,8 @@ pub(super) fn ppc_open_resource_fork_access(
         path: open_path,
         position: 0,
     });
-    if ppc_file_permission_allows_writing(permission) {
+    if crate::systems::macintosh::file_manager::permission_grants_write(i16::from(permission), true)
+    {
         writable_refnums.insert(ref_num as u16);
     }
     *next_file_ref_num = next_ref_num;
@@ -3787,9 +3783,16 @@ pub(super) fn ppc_fs_open(
     writable_refnums: &mut HashSet<u16>,
     next_file_ref_num: &mut i16,
     default_dir_id: u32,
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
 ) -> i16 {
-    // Inside Macintosh: Files (1992), 2-179: FSOpen resolves its file name
-    // relative to the current volume/directory and returns a refnum.
+    // FSOpen(fileName, vRefNum, VAR refNum) has no permission parameter: its
+    // access path's permission is "whatever the file's open permission
+    // allows", on the volume vRefNum specifies (Inside Macintosh Volume II
+    // (1985), p. II-91). That is fsCurPerm, read/write when available
+    // (Inside Macintosh: Files (1992), pp. 2-7--2-8), so FSOpen is HOpen
+    // with dirID 0 (p. 2-171), including a working-directory vRefNum.
+    let (volume_ref_num, effective_dir_id) =
+        ppc_working_directory_location(working_directories, cpu.gpr[4] as u16 as i16, 0);
     ppc_open_data_fork_by_name(
         memory,
         vfs_directories,
@@ -3799,10 +3802,10 @@ pub(super) fn ppc_fs_open(
         writable_refnums,
         next_file_ref_num,
         default_dir_id,
-        0,
-        0,
+        volume_ref_num,
+        effective_dir_id,
         cpu.gpr[3],
-        cpu.gpr[4] as u8,
+        crate::systems::macintosh::file_manager::FS_CUR_PERM,
         cpu.gpr[5],
     )
 }
@@ -3880,7 +3883,8 @@ pub(super) fn ppc_open_data_fork_by_name(
         path,
         position: 0,
     });
-    if ppc_file_permission_allows_writing(permission) {
+    if crate::systems::macintosh::file_manager::permission_grants_write(i16::from(permission), true)
+    {
         writable_refnums.insert(ref_num as u16);
     }
     *next_file_ref_num = next_ref_num;
@@ -3969,7 +3973,8 @@ pub(super) fn ppc_pbh_open_df(
         path,
         position: 0,
     });
-    if ppc_file_permission_allows_writing(permission) {
+    if crate::systems::macintosh::file_manager::permission_grants_write(i16::from(permission), true)
+    {
         writable_refnums.insert(ref_num as u16);
     }
     *next_file_ref_num = next_ref_num;
