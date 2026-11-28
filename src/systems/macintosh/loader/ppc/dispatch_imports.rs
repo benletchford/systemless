@@ -1228,6 +1228,7 @@ pub(crate) fn dispatch_supported_import(
             current_resource_refnum: *current_resource_refnum,
             gworlds,
             current_gworld: *current_gworld,
+            current_gdevice: *current_gdevice,
             quicktime,
             sound,
         },

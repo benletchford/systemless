@@ -18,6 +18,7 @@ pub(super) struct PpcQuickTimeDispatchContext<'a> {
     pub(super) current_resource_refnum: i16,
     pub(super) gworlds: &'a [PpcGWorldRecord],
     pub(super) current_gworld: u32,
+    pub(super) current_gdevice: u32,
     pub(super) quicktime: &'a mut PpcQuickTimeState,
     pub(super) sound: &'a mut PpcSoundState,
 }
@@ -41,6 +42,7 @@ pub(super) fn dispatch_quicktime_import(
         current_resource_refnum,
         gworlds,
         current_gworld,
+        current_gdevice,
         quicktime,
         sound,
     } = context;
@@ -264,6 +266,10 @@ pub(super) fn dispatch_quicktime_import(
                 quicktime,
                 sound,
             );
+            if error == PPC_NO_ERR {
+                quicktime.movie_gworld = current_gworld;
+                quicktime.movie_gdevice = current_gdevice;
+            }
             Some(PpcImportAction::Return(ppc_i16_result(
                 ppc_qt_record_error(quicktime, error),
             )))
@@ -279,7 +285,7 @@ pub(super) fn dispatch_quicktime_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::QtSetMovieGWorld => {
-            let error = ppc_qt_set_movie_gworld(cpu, quicktime);
+            let error = ppc_qt_set_movie_gworld(cpu, quicktime, current_gworld);
             Some(PpcImportAction::Return(ppc_i16_result(
                 ppc_qt_record_error(quicktime, error),
             )))
