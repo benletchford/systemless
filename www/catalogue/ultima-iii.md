@@ -92,7 +92,8 @@ players cannot travel to Ambrosia or raise their abilities. No registration
 code is included or applied here.
 
 The unchanged archive reaches the overworld in both Systemless and BasiliskII.
-In the release-mode browser build, choose **Continue Anyway** if the bundled
-UltimaThree font warning appears, then press Space through the title sequence
-and choose Journey Onward to use the included sample party. The promoted
-archive was verified through that overworld scene.
+On current 68k Systemless builds, press Space through the title sequence until
+the **Options** screen appears. Press **J** for **Journey Onward** to use the
+included sample party, then use the arrow keys to move around the overworld.
+Older builds may show a bundled UltimaThree font warning. Choose **Continue
+Anyway** to proceed if it appears.
