@@ -308,22 +308,8 @@ impl super::TrapDispatcher {
     }
 
     fn control_def_entry_looks_callable(bus: &MacMemoryBus, proc_addr: u32) -> bool {
-        if proc_addr == 0 {
-            return false;
-        }
-        matches!(
-            bus.read_word(proc_addr),
-            0x4E56 // LINK.W A6,#imm
-                | 0x48E7 // MOVEM.L regs,-(SP)
-                | 0x4EF9 // JMP abs.L
-                | 0x4EFA // JMP pc-relative
-                // JSR stubs: Chinese Chess Pro's 16-byte CDEF resources begin
-                // with JSR *+$E (an RTS) before jumping through a code
-                // address the application patches into the resource.
-                | 0x4EB9 // JSR abs.L
-                | 0x4EBA // JSR pc-relative
-                | 0x6000..=0x60FF // BRA/BRA.S to the real entry
-        )
+        proc_addr != 0
+            && crate::guest_procedure::m68k_definition_entry_is_callable(bus.read_word(proc_addr))
     }
 
     pub(crate) fn control_uses_application_def_proc(&self, bus: &MacMemoryBus, ctrl_ptr: u32) -> bool {

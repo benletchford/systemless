@@ -911,7 +911,7 @@ impl PpcLoadedApp {
                 // Macintosh Toolbox Essentials (1992), p. 5-109: the Control
                 // Manager sends drawCntl for every visible control drawn.
                 let resuming_control_definition =
-                    ppc_control_definition_resume_pending(&toolbox_startup, cpu);
+                    ppc_definition_resume_pending(&toolbox_startup, cpu);
                 // A null event cannot select an item. Pending callbacks
                 // still need the general dispatch path.
                 let null_dialog_poll = matches!(
@@ -2410,7 +2410,7 @@ impl PpcLoadedApp {
                                                     || port == dsp_front_buffer
                                                     || window_list.contains_window(port)
                                             };
-                                            let resumed_control = ppc_control_definition_continuation(
+                                            let resumed_control = ppc_definition_continuation(
                                                 binding, cpu, memory, &mut *process_memory_manager, &mut heap_cursor,
                                                 heap_limit, &mut last_mem_error, controls, &gworlds,
                                                 vfs_resources, *current_resource_refnum, &mut last_resource_error,
@@ -2547,7 +2547,7 @@ impl PpcLoadedApp {
                                             }),
                                             draw_sprocket: &mut draw_sprocket,
                                             });
-                                            action.and_then(|action| ppc_control_definition_continuation(
+                                            action.and_then(|action| ppc_definition_continuation(
                                                 binding, cpu, memory, &mut *process_memory_manager, &mut heap_cursor,
                                                 heap_limit, &mut last_mem_error, controls, &gworlds,
                                                 vfs_resources, *current_resource_refnum, &mut last_resource_error,

@@ -1,9 +1,20 @@
-//! Application control definitions entered through the process Mixed Mode gateway.
+//! Application control and window definitions entered through the process
+//! Mixed Mode gateway.
 
 use super::*;
+use crate::systems::macintosh::window_definition::{self, WindowDefinitionEvent};
+
+/// The record a queued definition message is sent for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PpcDefinitionTarget {
+    /// A control, by its ControlHandle ('CDEF').
+    Control(u32),
+    /// A window, by its WindowPtr ('WDEF').
+    Window(u32),
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct PpcControlDefinitionFrame {
+pub(super) struct PpcDefinitionFrame {
     import_pc: u32,
     gpr: [u32; 32],
     fpr: [u64; 32],
@@ -15,7 +26,59 @@ pub(super) struct PpcControlDefinitionFrame {
     port: u32,
     device: u32,
     completion: Option<PpcImportAction>,
-    pending: VecDeque<(u32, u16, u32)>,
+    pending: VecDeque<(PpcDefinitionTarget, u16, u32)>,
+    /// The color window whose classic port fields hold its pixel map's
+    /// bounds while its definition runs, with the fields to write back.
+    lent_bounds: Option<(u32, [u32; 2])>,
+}
+
+impl PpcDefinitionFrame {
+    fn return_lent_bounds(&mut self, memory: &mut PpcSectionMem) {
+        if let Some((window, saved)) = self.lent_bounds.take() {
+            let _ = memory.write_u32_be(window.wrapping_add(8), saved[0]);
+            let _ = memory.write_u32_be(window.wrapping_add(12), saved[1]);
+        }
+    }
+}
+
+/// Queue the messages the Window Manager sends an application window
+/// definition for `event`; the definition continuation sends them once the
+/// import that queued them completes. Standard definitions are drawn natively.
+pub(super) fn ppc_queue_window_definition(
+    memory: &mut PpcSectionMem,
+    startup: &mut PpcToolboxStartupState,
+    window: u32,
+    event: WindowDefinitionEvent,
+) {
+    let proc_id = ppc_window_proc_id(memory, window);
+    if window == 0 || !window_definition::is_application_definition(proc_id) {
+        return;
+    }
+    startup.window_definition_messages.extend(
+        window_definition::messages(event)
+            .iter()
+            .map(|&(message, parameter)| (window, message, parameter)),
+    );
+}
+
+/// The VFS resource of an application window definition the guest can call.
+fn ppc_application_window_definition(
+    memory: &mut PpcSectionMem,
+    resources: &[PpcVfsResourceRecord],
+    resource_file: i16,
+    proc_id: i16,
+) -> Option<usize> {
+    if !window_definition::is_application_definition(proc_id) {
+        return None;
+    }
+    let index = ppc_vfs_resource_index(
+        resources,
+        resource_file,
+        u32::from_be_bytes(*b"WDEF"),
+        window_definition::resource_id(proc_id),
+        false,
+    )?;
+    ppc_definition_resource_is_callable(memory, &resources[index]).then_some(index)
 }
 
 pub(super) fn ppc_application_control_definition(
@@ -37,10 +100,10 @@ pub(super) fn ppc_application_control_definition(
         ((proc_id as u16) >> 4) as i16,
         false,
     )?;
-    ppc_control_definition_is_callable(memory, &resources[index]).then_some(index)
+    ppc_definition_resource_is_callable(memory, &resources[index]).then_some(index)
 }
 
-fn ppc_control_definition_is_callable(
+fn ppc_definition_resource_is_callable(
     memory: &mut PpcSectionMem,
     resource: &PpcVfsResourceRecord,
 ) -> bool {
@@ -57,10 +120,7 @@ fn ppc_control_definition_is_callable(
     }) else {
         return false;
     };
-    matches!(
-        word,
-        0x4e56 | 0x48e7 | 0x4ef9 | 0x4efa | 0x6000..=0x60ff | PPC_MIXED_MODE_TRAP
-    )
+    word == PPC_MIXED_MODE_TRAP || crate::guest_procedure::m68k_definition_entry_is_callable(word)
 }
 
 pub(super) fn ppc_control_definition_resource(
@@ -77,27 +137,27 @@ pub(super) fn ppc_control_definition_resource(
     resources
         .iter()
         .position(|resource| handle != 0 && resource.handle == handle)
-        .filter(|&index| ppc_control_definition_is_callable(memory, &resources[index]))
+        .filter(|&index| ppc_definition_resource_is_callable(memory, &resources[index]))
         .or_else(|| {
             ppc_application_control_definition(memory, resources, resource_file, record.proc_id)
         })
 }
 
-/// Whether this import entry is a guest control definition returning to the
-/// import that queued it, so the remaining queued messages must be resumed
-/// before the import itself is dispatched again.
-pub(super) fn ppc_control_definition_resume_pending(
+/// Whether this import entry is a guest control or window definition
+/// returning to the import that queued it, so the remaining queued messages
+/// must be resumed before the import itself is dispatched again.
+pub(super) fn ppc_definition_resume_pending(
     startup: &PpcToolboxStartupState,
     cpu: &PpcCpu,
 ) -> bool {
     startup
-        .control_definition_stack
+        .definition_stack
         .last()
         .is_some_and(|frame| frame.import_pc == cpu.pc && cpu.lr == cpu.pc)
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn ppc_control_definition_continuation(
+pub(super) fn ppc_definition_continuation(
     binding: &PpcImportBinding,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
@@ -115,18 +175,31 @@ pub(super) fn ppc_control_definition_continuation(
     device: &mut u32,
     completion: Option<PpcImportAction>,
 ) -> Option<PpcImportAction> {
-    let resumed = ppc_control_definition_resume_pending(startup, cpu);
+    let resumed = ppc_definition_resume_pending(startup, cpu);
     let mut frame = if resumed && completion.is_none() {
-        startup.control_definition_stack.pop().unwrap()
+        startup.definition_stack.pop().unwrap()
     } else if let Some(completion) = completion {
-        if !controls.iter().any(|control| {
-            control.native_definition_pending_init
-                || !control.native_definition_draws.borrow().is_empty()
-        }) {
+        if startup.window_definition_messages.is_empty()
+            && !controls.iter().any(|control| {
+                control.native_definition_pending_init
+                    || !control.native_definition_draws.borrow().is_empty()
+            })
+        {
             return Some(completion);
         }
         let mut handles = manager.native_handle_records().to_vec();
-        let mut pending = VecDeque::new();
+        // A window's frame comes before the controls drawn in it.
+        let mut pending: VecDeque<_> = startup
+            .window_definition_messages
+            .drain(..)
+            .map(|(window, message, parameter)| {
+                (
+                    PpcDefinitionTarget::Window(window),
+                    message as u16,
+                    parameter,
+                )
+            })
+            .collect();
         let mut draws = Vec::new();
         for control in controls.iter_mut() {
             let index = ppc_control_definition_resource(memory, resources, resource_file, control);
@@ -149,7 +222,7 @@ pub(super) fn ppc_control_definition_continuation(
                     if handle != 0 {
                         let _ = memory.write_u32_be(control.pointer + 24, handle);
                         if initializing {
-                            pending.push_back((control.handle, 3, 0));
+                            pending.push_back((PpcDefinitionTarget::Control(control.handle), 3, 0));
                         }
                     }
                 }
@@ -159,11 +232,15 @@ pub(super) fn ppc_control_definition_continuation(
             }
         }
         draws.sort_by_key(|&(sequence, _)| sequence);
-        pending.extend(draws.into_iter().map(|(_, handle)| (handle, 0, 0)));
+        pending.extend(
+            draws
+                .into_iter()
+                .map(|(_, handle)| (PpcDefinitionTarget::Control(handle), 0, 0)),
+        );
         if pending.is_empty() {
             return Some(completion);
         }
-        PpcControlDefinitionFrame {
+        PpcDefinitionFrame {
             import_pc: cpu.pc,
             gpr: cpu.gpr,
             fpr: cpu.fpr,
@@ -176,6 +253,7 @@ pub(super) fn ppc_control_definition_continuation(
             device: *device,
             completion: Some(completion),
             pending,
+            lent_bounds: None,
         }
     } else {
         if !matches!(
@@ -208,13 +286,13 @@ pub(super) fn ppc_control_definition_continuation(
                     .is_some()
                 && memory.read_u32_be(control.pointer + 24).unwrap_or(0) != 0
             {
-                pending.push_back((control.handle, 4, 0));
+                pending.push_back((PpcDefinitionTarget::Control(control.handle), 4, 0));
             }
         }
         if pending.is_empty() {
             return None;
         }
-        PpcControlDefinitionFrame {
+        PpcDefinitionFrame {
             import_pc: cpu.pc,
             gpr: cpu.gpr,
             fpr: cpu.fpr,
@@ -227,14 +305,63 @@ pub(super) fn ppc_control_definition_continuation(
             device: *device,
             completion: None,
             pending,
+            lent_bounds: None,
         }
     };
 
-    while let Some((handle, message, parameter)) = frame.pending.pop_front() {
-        let Some(control) = controls.iter().find(|control| control.handle == handle) else {
-            continue;
+    frame.return_lent_bounds(memory);
+    while let Some((definition, message, parameter)) = frame.pending.pop_front() {
+        // The definition handle, the record argument, the variation code and
+        // the port the definition draws in.
+        let (definition_handle, record, variation, definition_port) = match definition {
+            PpcDefinitionTarget::Control(handle) => {
+                let Some(control) = controls.iter().find(|control| control.handle == handle) else {
+                    continue;
+                };
+                (
+                    memory.read_u32_be(control.pointer + 24).unwrap_or(0),
+                    handle,
+                    control.proc_id as u16 & 15,
+                    memory
+                        .read_u32_be(control.pointer + PPC_CONTROL_OWNER_OFFSET)
+                        .unwrap_or(frame.port),
+                )
+            }
+            PpcDefinitionTarget::Window(window) => {
+                let proc_id = ppc_window_proc_id(memory, window);
+                let Some(index) =
+                    ppc_application_window_definition(memory, resources, resource_file, proc_id)
+                else {
+                    continue;
+                };
+                let mut handles = manager.native_handle_records().to_vec();
+                let handle = ppc_materialize_vfs_resource_handle(
+                    manager,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    &mut handles,
+                    resources,
+                    index,
+                    true,
+                    last_resource_error,
+                );
+                // Definitions draw in the Window Manager port, in global
+                // coordinates (Toolbox Essentials (1992), p. 4-121).
+                (
+                    handle,
+                    window,
+                    window_definition::variation(proc_id) as u16,
+                    PPC_MAIN_GWORLD,
+                )
+            }
         };
-        let definition_handle = memory.read_u32_be(control.pointer + 24).unwrap_or(0);
+        // Materializing a definition resource can fail and return a nil
+        // handle; never read through it.
+        if definition_handle == 0 {
+            continue;
+        }
         let entry = memory.read_u32_be(definition_handle).unwrap_or(0);
         if entry == 0 {
             continue;
@@ -249,25 +376,31 @@ pub(super) fn ppc_control_definition_continuation(
         ) else {
             continue;
         };
-        *port = memory
-            .read_u32_be(control.pointer + PPC_CONTROL_OWNER_OFFSET)
-            .unwrap_or(frame.port);
+        *port = definition_port;
         if startup.init_graf_global_ptr != 0 {
             let _ = memory.write_u32_be(startup.init_graf_global_ptr, *port);
         }
-        let arguments = vec![
-            u32::from(control.proc_id as u16 & 15),
-            handle,
-            u32::from(message),
-            parameter,
-        ];
+        if let PpcDefinitionTarget::Window(window) = definition {
+            if let Some(bounds) = window_definition::legacy_port_bounds(memory, window) {
+                let _ = memory.write_u32_be(window + 8, bounds.lent[0]);
+                let _ = memory.write_u32_be(window + 12, bounds.lent[1]);
+                frame.lent_bounds = Some((window, bounds.saved));
+            }
+        }
+        let arguments = vec![u32::from(variation), record, u32::from(message), parameter];
+        // uppControlDefProcInfo and uppWindowDefProcInfo describe the same
+        // Pascal signature.
+        let proc_info = match definition {
+            PpcDefinitionTarget::Control(_) => 0x3bb0,
+            PpcDefinitionTarget::Window(_) => window_definition::PROC_INFO,
+        };
         cpu.lr = frame.import_pc;
         let action = match target.isa {
             GuestIsa::M68k => {
                 // A native application's data section is not a classic A5
                 // world. Give resource code a real QDGlobals pointer chain,
                 // without overwriting any application data.
-                if startup.control_definition_globals == 0 {
+                if startup.definition_globals == 0 {
                     let globals = manager.new_native_ptr(memory, 134, true);
                     ppc_apply_process_native_allocator(
                         manager,
@@ -278,10 +411,10 @@ pub(super) fn ppc_control_definition_continuation(
                     if globals == 0 {
                         break;
                     }
-                    startup.control_definition_globals = globals;
+                    startup.definition_globals = globals;
                     let _ = ppc_init_graf(memory, gworlds, globals + 126);
                 }
-                let globals = startup.control_definition_globals;
+                let globals = startup.definition_globals;
                 let the_port = if startup.init_graf_global_ptr != 0 {
                     startup.init_graf_global_ptr
                 } else {
@@ -297,14 +430,20 @@ pub(super) fn ppc_control_definition_continuation(
                     heap_limit,
                     startup,
                     target,
-                    0x3bb0,
+                    proc_info,
                     arguments,
                     frame.import_pc,
                     globals + 130,
                 )
             }
             GuestIsa::PowerPc => {
-                install_powerpc_call_arguments(cpu, memory, &arguments)?;
+                // Without room for the parameter area, skip the remaining
+                // messages. The epilogue below still restores the caller's
+                // port, its QDGlobals word and registers, and delivers the
+                // completion.
+                if install_powerpc_call_arguments(cpu, memory, &arguments).is_none() {
+                    break;
+                }
                 GuestCallEffect::call_guest(
                     GuestCallRequest::new(GuestCallTarget {
                         isa: target.isa,
@@ -322,10 +461,12 @@ pub(super) fn ppc_control_definition_continuation(
             }
         };
         if let Some(action) = action {
-            startup.control_definition_stack.push(frame);
+            startup.definition_stack.push(frame);
             return Some(action);
         }
+        frame.return_lent_bounds(memory);
     }
+    frame.return_lent_bounds(memory);
     cpu.gpr = frame.gpr;
     cpu.fpr = frame.fpr;
     cpu.cr = frame.cr;

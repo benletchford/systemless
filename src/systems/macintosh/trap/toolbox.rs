@@ -4479,17 +4479,8 @@ impl super::TrapDispatcher {
     }
 
     fn proc_entry_looks_callable(bus: &MacMemoryBus, proc_addr: u32) -> bool {
-        if proc_addr == 0 {
-            return false;
-        }
-        matches!(
-            bus.read_word(proc_addr),
-            0x4E56 // LINK.W A6,#imm
-                | 0x48E7 // MOVEM.L regs,-(SP)
-                | 0x4EF9 // JMP abs.L
-                | 0x4EFA // JMP pc-relative
-                | 0x6000..=0x60FF // BRA/BRA.S to the real entry
-        )
+        proc_addr != 0
+            && crate::guest_procedure::m68k_definition_entry_is_callable(bus.read_word(proc_addr))
     }
 
     fn get_or_create_list_def_trampoline(&mut self, bus: &mut MacMemoryBus) -> u32 {
@@ -4904,7 +4895,7 @@ impl super::TrapDispatcher {
         Self::write_rect_words(bus, cell_clip_ptr + 2, rect);
         bus.write_long(cell_clip_handle, cell_clip_ptr);
         if saved_clip_handle != 0 {
-            Self::write_region_boolean_op(
+            self.write_region_boolean_op(
                 bus,
                 cell_clip_handle,
                 saved_clip_handle,

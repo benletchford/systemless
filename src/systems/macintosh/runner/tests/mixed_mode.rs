@@ -2791,6 +2791,274 @@ fn native_control_executes_original_classic_definition_and_returns_to_caller() {
 }
 
 #[test]
+fn native_window_runs_its_classic_definition_in_the_window_manager_port() {
+    // NewCWindow on a visible window sends wNew, wCalcRgns and wDraw.
+    native_window_definition_case(WindowDefinitionCase::Visible);
+}
+
+#[test]
+fn native_show_window_draws_a_hidden_window_through_its_classic_definition() {
+    // A hidden window gets wNew; ShowWindow then sends wCalcRgns and wDraw.
+    native_window_definition_case(WindowDefinitionCase::ShownLater);
+}
+
+#[test]
+fn native_move_window_redraws_the_frame_through_its_classic_definition() {
+    // Moving a visible window sends wCalcRgns and wDraw again, so the
+    // definition's frame follows the window.
+    native_window_definition_case(WindowDefinitionCase::Moved);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WindowDefinitionCase {
+    Visible,
+    ShownLater,
+    Moved,
+}
+
+fn native_window_definition_case(case: WindowDefinitionCase) {
+    let show_later = case == WindowDefinitionCase::ShownLater;
+    use crate::loader::ppc::tests::synthetic_pef_with_import;
+    use crate::process_context::ProcessVfsResourceRecord;
+
+    const SCRATCH: u32 = 0x0180_0000;
+    const LOG_PTR: u32 = SCRATCH + 0x40;
+    const LOG: u32 = SCRATCH + 0x48;
+    const VARIANT: u32 = SCRATCH + 0x60;
+    const PORT_SLOT: u32 = SCRATCH + 0x64;
+    const SHADOW: u32 = SCRATCH + 0x70;
+    const FRAME: u32 = SCRATCH + 0x78;
+    const STRIP: u32 = SCRATCH + 0x80;
+    const RESULT: u32 = SCRATCH + 0x90;
+    const LENT_BOUNDS: u32 = SCRATCH + 0x94;
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"NewCWindow")).unwrap();
+    native.memory.add_region(SCRATCH, vec![0; 512]);
+    let mut put_rect = |at: u32, rect: [u16; 4]| {
+        for (index, value) in rect.into_iter().enumerate() {
+            native
+                .memory
+                .write_u16_be(at + index as u32 * 2, value)
+                .unwrap();
+        }
+    };
+    // Content (60,60)-(100,160); the definition's frame and a drop shadow
+    // below it make a two-rectangle structure region.
+    put_rect(SCRATCH, [60, 60, 100, 160]);
+    put_rect(FRAME, [50, 59, 101, 161]);
+    put_rect(SHADOW, [101, 62, 104, 163]);
+    put_rect(STRIP, [52, 61, 58, 159]);
+    native.memory.write_u32_be(LOG_PTR, LOG).unwrap();
+    // A Pascal WDEF (Macintosh Toolbox Essentials (1992), p. 4-120) that logs
+    // each message and its variation code. wCalcRgns builds its structure
+    // region with NewRgn, RectRgn and UnionRgn into the native strucRgn
+    // handle; wDraw paints a strip in the port GetCWMgrPort returns.
+    let words = [
+        0x4e56u16,
+        0x0000,
+        0x206e, // MOVEA.L theWindow(A6),A0
+        0x000e,
+        0x23e8, // MOVE.L 8(A0),LENT_BOUNDS: classic portBits.bounds.topLeft
+        0x0008,
+        (LENT_BOUNDS >> 16) as u16,
+        LENT_BOUNDS as u16,
+        0x207c, // MOVEA.L #LOG_PTR,A0
+        (LOG_PTR >> 16) as u16,
+        LOG_PTR as u16,
+        0x2250, // MOVEA.L (A0),A1
+        0x32ee, // MOVE.W message(A6),(A1)+
+        0x000c,
+        0x2089, // MOVE.L A1,(A0)
+        0x33ee, // MOVE.W varCode(A6),VARIANT
+        0x0012,
+        (VARIANT >> 16) as u16,
+        VARIANT as u16,
+        0x302e, // MOVE.W message(A6),D0
+        0x000c,
+        0x0c40, // CMPI.W #wCalcRgns,D0
+        0x0002,
+        0x6632, // BNE.S not_calc
+        0x598f, // SUBQ.L #4,SP
+        0xa8d8, // NewRgn
+        0x2f17,
+        0x4879,
+        (SHADOW >> 16) as u16,
+        SHADOW as u16,
+        0xa8df, // RectRgn(shadow, SHADOW)
+        0x206e, // MOVEA.L theWindow(A6),A0
+        0x000e,
+        0x2f28, // MOVE.L strucRgn(A0),-(SP)
+        0x0072,
+        0x4879,
+        (FRAME >> 16) as u16,
+        FRAME as u16,
+        0xa8df, // RectRgn(strucRgn, FRAME)
+        0x2f17,
+        0x206e,
+        0x000e,
+        0x2f28,
+        0x0072,
+        0x2f28,
+        0x0072,
+        0xa8e5, // UnionRgn(shadow, strucRgn, strucRgn)
+        0xa8d9, // DisposeRgn(shadow)
+        0x601e, // BRA.S done
+        0x4a40, // not_calc: TST.W D0 (wDraw)
+        0x661a, // BNE.S done
+        0x4879,
+        (PORT_SLOT >> 16) as u16,
+        PORT_SLOT as u16,
+        0xaa48, // GetCWMgrPort(PORT_SLOT)
+        0x2f39,
+        (PORT_SLOT >> 16) as u16,
+        PORT_SLOT as u16,
+        0xa873, // SetPort
+        0xa89e, // PenNormal
+        0x4879,
+        (STRIP >> 16) as u16,
+        STRIP as u16,
+        0xa8a2, // PaintRect(STRIP)
+        0x42ae, // done: CLR.L result(A6)
+        0x0014,
+        0x4e5e,
+        0x4e74, // RTD #12
+        0x000c,
+    ];
+    native
+        .process_file_system
+        .push_vfs_resource(ProcessVfsResourceRecord {
+            ref_num: *native.process_file_system.current_resource_file,
+            path: String::new(),
+            res_type: u32::from_be_bytes(*b"WDEF"),
+            res_id: 128,
+            name: Vec::new(),
+            data: words
+                .into_iter()
+                .flat_map(u16::to_be_bytes)
+                .collect::<Vec<_>>()
+                .into(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+    let mut show = if case == WindowDefinitionCase::Moved {
+        let mut binding = test_ppc_import_binding(1, "InterfaceLib", "MoveWindow");
+        binding.dispatcher_target = PpcImportDispatcherTarget::MoveWindow;
+        binding
+    } else {
+        let mut binding = test_ppc_import_binding(1, "InterfaceLib", "ShowWindow");
+        binding.dispatcher_target = PpcImportDispatcherTarget::ShowWindow;
+        binding
+    };
+    show.trap_pc = PPC_IMPORT_TRAP_BASE + 4;
+    native.memory.add_region(show.trap_pc, vec![0; 4]);
+    let program = SCRATCH + 0x100;
+    let words = [
+        ppc_test_relative_branch(program, native.imports[0].trap_pc) | 1,
+        0x3d80_0000 | (RESULT >> 16),
+        0x618c_0000 | (RESULT & 0xffff),
+        0x906c_0000, // stw r3,0(r12): retain the WindowPtr.
+        0x3880_0046, // li r4,70: MoveWindow's hGlobal
+        0x38a0_0046, // li r5,70: MoveWindow's vGlobal
+        0x38c0_0000, // li r6,0: don't bring it to the front
+        if case == WindowDefinitionCase::Visible {
+            0x6000_0000 // nop
+        } else {
+            ppc_test_relative_branch(program + 28, show.trap_pc) | 1
+        },
+        ppc_test_relative_branch(program + 32, native.halt_pc),
+    ];
+    for (index, word) in words.into_iter().enumerate() {
+        native
+            .memory
+            .write_u32_be(program + index as u32 * 4, word)
+            .unwrap();
+    }
+    native.imports.push(show);
+    native.import_count = 2;
+    native.entry_pc = program;
+    native.cpu.pc = program;
+    native.cpu.gpr[3] = 0;
+    native.cpu.gpr[4] = SCRATCH;
+    native.cpu.gpr[5] = SCRATCH + 8;
+    native.cpu.gpr[6] = u32::from(!show_later);
+    native.cpu.gpr[7] = 128 * 16 + 5;
+    native.cpu.gpr[8] = u32::MAX;
+    native.cpu.gpr[9] = 1;
+    native.cpu.gpr[10] = 0;
+    let mut runner = FixtureRunner::new(64 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&LoadedApp::from_ppc(native));
+    let native = runner.native.application_mut().unwrap();
+    let screen = native
+        .gworlds
+        .iter()
+        .find(|world| world.port == PPC_MAIN_GWORLD)
+        .unwrap();
+    assert_eq!(screen.depth, 8);
+    let strip_pixel = screen.base_addr + 55 * screen.row_bytes + 80;
+    // Standard 8-bit device palette: white is index 0, black is index 255.
+    native.memory.write_u8(strip_pixel, 0).unwrap();
+    let (_, running) = runner.run_steps(8192, None);
+    assert!(!running);
+    let native = runner.native.application_mut().unwrap();
+    assert_eq!(native.cpu.pc, native.halt_pc);
+    let window = native.memory.read_u32_be(RESULT).unwrap();
+    assert_ne!(window, 0);
+    // wNew, then wCalcRgns and wDraw once the window is visible, with the
+    // procID's variation code.
+    let log: Vec<_> = (0..6)
+        .map(|index| native.memory.read_u16_be(LOG + index * 2).unwrap())
+        .collect();
+    if case == WindowDefinitionCase::Moved {
+        assert_eq!(log, [3, 2, 0, 2, 0, 0]);
+        assert_eq!(native.memory.read_u32_be(LOG_PTR), Some(LOG + 10));
+    } else {
+        assert_eq!(log, [3, 2, 0, 0, 0, 0]);
+        assert_eq!(native.memory.read_u32_be(LOG_PTR), Some(LOG + 6));
+    }
+    assert_eq!(native.memory.read_u16_be(VARIANT), Some(5));
+    // The definition draws in the process's Window Manager port: the screen.
+    assert_eq!(native.memory.read_u32_be(PORT_SLOT), Some(PPC_MAIN_GWORLD));
+    assert_eq!(native.memory.read_u8(strip_pixel), Some(0xff));
+    // UnionRgn grew the native strucRgn block rather than writing past it
+    // into the content region allocated after it.
+    let region = |native: &mut crate::loader::ppc::PpcLoadedApp, offset: u32| {
+        let handle = native.memory.read_u32_be(window + offset).unwrap();
+        let ptr = native.memory.read_u32_be(handle).unwrap();
+        let words: Vec<u16> = (0..5)
+            .map(|index| native.memory.read_u16_be(ptr + index * 2).unwrap())
+            .collect();
+        words
+    };
+    let content = if case == WindowDefinitionCase::Moved {
+        [10, 70, 70, 110, 170]
+    } else {
+        [10, 60, 60, 100, 160]
+    };
+    assert_eq!(region(native, 118), content);
+    let structure = region(native, 114);
+    assert!(structure[0] > 10, "{structure:?}");
+    assert_eq!(structure[1..], [50, 59, 104, 163]);
+    // A color window lends the definition its pixel map's bounds where a
+    // classic port keeps portBits.bounds, then gets its own fields back.
+    let pixmap_handle = native.memory.read_u32_be(window + 2).unwrap();
+    let pixmap = native.memory.read_u32_be(pixmap_handle).unwrap();
+    assert_eq!(
+        native.memory.read_u32_be(LENT_BOUNDS),
+        native.memory.read_u32_be(pixmap + 6)
+    );
+    // The window's global origin, negated: (-60,-60), or (-70,-70) once moved.
+    let origin = if case == WindowDefinitionCase::Moved {
+        0xffba_ffba
+    } else {
+        0xffc4_ffc4
+    };
+    assert_eq!(native.memory.read_u32_be(LENT_BOUNDS), Some(origin));
+    assert_ne!(native.memory.read_u32_be(window + 8), Some(origin));
+    assert!(native.guest_calls().is_empty());
+}
+
+#[test]
 fn cursor_device_enumeration_and_warps_share_records_across_mixed_mode() {
     use crate::loader::ppc::tests::synthetic_pef_with_import;
     const NEXT: u32 = PPC_HEAP_BASE + 0x2000;

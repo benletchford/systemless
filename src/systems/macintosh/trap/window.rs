@@ -6,6 +6,7 @@ use crate::mac_roman::{decode_mac_roman, encode_mac_roman_lossy};
 use crate::memory::SavedPixels;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::systems::macintosh::ui_theme::Rgb8;
+use crate::systems::macintosh::window_definition::{self, WindowDefinitionEvent};
 use crate::trap::dispatch::{DrawOldState, PortDrawState, QueuedEvent};
 use crate::trap::types::{Rect, ShapeOp};
 use crate::Result;
@@ -74,10 +75,6 @@ impl super::TrapDispatcher {
     const LOWMEM_GRAY_RGN: u32 = 0x09EE;
     const LOWMEM_DRAG_PATTERN: u32 = 0x0A34;
     pub(super) const GRAY_DRAG_PATTERN: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
-    const WDEF_WDRAW_MSG: i16 = 0;
-    const WDEF_WCALC_RGNS_MSG: i16 = 2;
-    const WDEF_WNEW_MSG: i16 = 3;
-    const WDEF_FIRST_APPLICATION_RESOURCE_ID: i16 = 128;
     const WDEF_TRAMPOLINE_SIZE: u32 = 68;
     const AUX_WIN_NEXT_OFFSET: u32 = 0;
     const AUX_WIN_OWNER_OFFSET: u32 = 4;
@@ -823,26 +820,18 @@ impl super::TrapDispatcher {
         handle
     }
 
-    fn window_def_resource_id(proc_id: i16) -> i16 {
-        proc_id >> 4
-    }
-
-    fn is_application_window_def_proc_id(proc_id: i16) -> bool {
-        Self::window_def_resource_id(proc_id) >= Self::WDEF_FIRST_APPLICATION_RESOURCE_ID
-    }
-
     pub(crate) fn window_uses_custom_def_proc(&self, bus: &MacMemoryBus, window_ptr: u32) -> bool {
         if window_ptr == 0 {
             return false;
         }
         let proc_id = self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0);
-        Self::is_application_window_def_proc_id(proc_id)
+        window_definition::is_application_definition(proc_id)
             && bus.read_long(window_ptr + Self::WINDOW_DEF_PROC_OFFSET) != 0
     }
 
     fn window_def_proc_handle(&mut self, bus: &mut MacMemoryBus, proc_id: i16) -> u32 {
-        let wdef_id = Self::window_def_resource_id(proc_id);
-        if Self::is_application_window_def_proc_id(proc_id) {
+        let wdef_id = window_definition::resource_id(proc_id);
+        if window_definition::is_application_definition(proc_id) {
             return self
                 .find_or_load_resource_any(bus, *b"WDEF", wdef_id)
                 .map(|(_, ptr)| ptr)
@@ -869,20 +858,6 @@ impl super::TrapDispatcher {
         } else {
             def_handle
         }
-    }
-
-    fn window_def_entry_looks_callable(bus: &MacMemoryBus, proc_addr: u32) -> bool {
-        if proc_addr == 0 {
-            return false;
-        }
-        matches!(
-            bus.read_word(proc_addr),
-            0x4E56 // LINK.W A6,#imm
-                | 0x48E7 // MOVEM.L regs,-(SP)
-                | 0x4EF9 // JMP abs.L
-                | 0x4EFA // JMP pc-relative
-                | 0x6000..=0x60FF // BRA/BRA.S to the real entry
-        )
     }
 
     fn get_or_create_window_def_trampoline(&mut self, bus: &mut MacMemoryBus) -> u32 {
@@ -969,13 +944,15 @@ impl super::TrapDispatcher {
         proc_id: i16,
         messages: &[(i16, u32)],
     ) -> bool {
-        if messages.is_empty() || !Self::is_application_window_def_proc_id(proc_id) {
+        if messages.is_empty() || !window_definition::is_application_definition(proc_id) {
             return false;
         }
 
         let def_handle = bus.read_long(window_ptr + Self::WINDOW_DEF_PROC_OFFSET);
         let proc_addr = Self::window_def_proc_addr(bus, def_handle);
-        if !Self::window_def_entry_looks_callable(bus, proc_addr) {
+        if proc_addr == 0
+            || !crate::guest_procedure::m68k_definition_entry_is_callable(bus.read_word(proc_addr))
+        {
             return false;
         }
 
@@ -989,35 +966,20 @@ impl super::TrapDispatcher {
         let wmgr_port = self.ensure_color_window_manager_port(bus);
         self.set_current_port_state(bus, cpu, wmgr_port, None);
 
-        // Pre-Color QuickDraw WDEFs receive WindowPeek and commonly read the
-        // classic inline portBits.bounds at offsets +8..+15 to turn portRect
-        // into global strucRgn/contRgn coordinates. A CWindowRecord stores
-        // grafVars/chExtra/pnLocHFrac there instead. System 7 preserves this
-        // legacy WDEF contract, so expose the authoritative portPixMap bounds
-        // only for the duration of the callback chain and restore the color
-        // fields in the final trampoline before guest execution resumes.
-        let restore_cgraf_fields = if (bus.read_word(window_ptr + 6) & 0xC000) != 0 {
-            let pixmap_handle = bus.read_long(window_ptr + 2);
-            let pixmap = bus.read_long(pixmap_handle);
-            if pixmap != 0 {
-                let saved = (
-                    bus.read_long(window_ptr + 8),
-                    bus.read_long(window_ptr + 12),
-                );
-                bus.write_long(window_ptr + 8, bus.read_long(pixmap + 6));
-                bus.write_long(window_ptr + 12, bus.read_long(pixmap + 10));
-                Some(saved)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        // A color window lends its pixel map's bounds to the definition for
+        // the whole callback chain; the final trampoline writes the color
+        // fields back before guest execution resumes.
+        let restore_cgraf_fields =
+            window_definition::legacy_port_bounds(bus, window_ptr).map(|bounds| {
+                bus.write_long(window_ptr + 8, bounds.lent[0]);
+                bus.write_long(window_ptr + 12, bounds.lent[1]);
+                (bounds.saved[0], bounds.saved[1])
+            });
 
         let final_sp = cpu.read_reg(Register::A7);
         let return_pc = cpu.read_reg(Register::PC);
         let return_slot = final_sp.wrapping_sub(4);
-        let variant = proc_id & 0xF;
+        let variant = window_definition::variation(proc_id);
         let trampolines: Vec<u32> = (0..messages.len())
             .map(|idx| {
                 if idx == 0 {
@@ -1064,13 +1026,10 @@ impl super::TrapDispatcher {
         draw_initial_frame: bool,
         visible: bool,
     ) -> bool {
-        let mut messages = Vec::with_capacity(3);
-        messages.push((Self::WDEF_WNEW_MSG, 0));
-        if draw_initial_frame && visible {
-            messages.push((Self::WDEF_WCALC_RGNS_MSG, 0));
-            messages.push((Self::WDEF_WDRAW_MSG, 0));
-        }
-        self.arm_window_def_messages(cpu, bus, window_ptr, proc_id, &messages)
+        let messages = window_definition::messages(WindowDefinitionEvent::Create {
+            draws_frame: draw_initial_frame && visible,
+        });
+        self.arm_window_def_messages(cpu, bus, window_ptr, proc_id, messages)
     }
 
     fn arm_window_def_draw<C: CpuOps>(
@@ -1085,7 +1044,31 @@ impl super::TrapDispatcher {
             bus,
             window_ptr,
             proc_id,
-            &[(Self::WDEF_WCALC_RGNS_MSG, 0), (Self::WDEF_WDRAW_MSG, 0)],
+            window_definition::messages(WindowDefinitionEvent::Reveal),
+        )
+    }
+
+    /// After MoveWindow or DragWindow moves a visible window, its application
+    /// definition recalculates its regions and draws its frame at the new
+    /// position, as on PowerPC.
+    fn arm_window_def_move<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        window_ptr: u32,
+    ) -> bool {
+        if !self.window_visible(bus, window_ptr)
+            || !self.window_uses_custom_def_proc(bus, window_ptr)
+        {
+            return false;
+        }
+        let proc_id = self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0);
+        self.arm_window_def_messages(
+            cpu,
+            bus,
+            window_ptr,
+            proc_id,
+            window_definition::messages(WindowDefinitionEvent::Move),
         )
     }
 
@@ -2831,7 +2814,7 @@ impl super::TrapDispatcher {
             if bounds_top != 0 || bounds_left != 0 {
                 Self::offset_region(bus, update_handle, bounds_left, bounds_top);
             }
-            Self::write_region_boolean_op(
+            self.write_region_boolean_op(
                 bus,
                 vis_handle,
                 vis_handle,
@@ -2910,7 +2893,7 @@ impl super::TrapDispatcher {
         }
 
         // Start from a copy of the content region in global coordinates.
-        Self::write_region_boolean_op(
+        self.write_region_boolean_op(
             bus,
             vis_handle,
             cont_handle,
@@ -2935,7 +2918,7 @@ impl super::TrapDispatcher {
             if struc_handle == 0 || Self::region_handle_rect(bus, struc_handle).is_none() {
                 continue;
             }
-            Self::write_region_boolean_op(
+            self.write_region_boolean_op(
                 bus,
                 vis_handle,
                 vis_handle,
@@ -2962,7 +2945,7 @@ impl super::TrapDispatcher {
                 if top < mbar_h {
                     let clipped = (top.max(mbar_h), left, bottom, right);
                     let menu_bar_rgn = Self::alloc_rect_region_handle(bus, Some(clipped));
-                    Self::write_region_boolean_op(
+                    self.write_region_boolean_op(
                         bus,
                         vis_handle,
                         vis_handle,
@@ -4279,7 +4262,7 @@ impl super::TrapDispatcher {
             bus,
             Some((top, left, top.saturating_add(height), left.saturating_add(width))),
         );
-        Self::write_region_boolean_op(
+        self.write_region_boolean_op(
             bus, region, region, screen, RegionBooleanOp::Intersection,
         );
         let screen_ptr = bus.read_long(screen);
@@ -4303,7 +4286,7 @@ impl super::TrapDispatcher {
         erase_content: bool,
     ) {
         let new_visible = self.snapshot_window_visibility(bus, window);
-        Self::write_region_boolean_op(
+        self.write_region_boolean_op(
             bus,
             old_visible,
             new_visible,
@@ -5342,6 +5325,7 @@ impl super::TrapDispatcher {
                 self.move_window_to_global(bus, cpu, the_window, h_global, v_global, front_flag);
 
                 cpu.write_reg(Register::A7, sp + 10);
+                self.arm_window_def_move(cpu, bus, the_window);
                 Ok(())
             }
 
@@ -5580,6 +5564,7 @@ impl super::TrapDispatcher {
                     if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
                         self.event_queue.remove(index);
                     }
+                    let mut moved_window = None;
                     if Self::point_in_rect(mouse.0, mouse.1, tracking.bounds_rect)
                         && mouse != tracking.start_mouse
                     {
@@ -5610,6 +5595,7 @@ impl super::TrapDispatcher {
                             new_v,
                             !tracking.command_down,
                         );
+                        moved_window = Some(tracking.window_ptr);
                         if trace_dragwindow_enabled() {
                             eprintln!(
                                 "[DRAGWINDOW] moved window=${:08X} from=({}, {}) to=({}, {}) front={}",
@@ -5625,6 +5611,9 @@ impl super::TrapDispatcher {
                         eprintln!("[DRAGWINDOW] no move");
                     }
                     cpu.write_reg(Register::A7, tracking.stack_ptr + 12);
+                    if let Some(window) = moved_window {
+                        self.arm_window_def_move(cpu, bus, window);
+                    }
                     return Some(Ok(()));
                 }
 
@@ -5683,6 +5672,7 @@ impl super::TrapDispatcher {
                     self.window_tracking = Some(tracking);
                     cpu.write_reg(Register::A7, sp);
                 } else {
+                    let mut moved_window = None;
                     if Self::point_in_rect(mouse.0, mouse.1, bounds_rect) && mouse != start_mouse {
                         let new_v = original_port_origin
                             .0
@@ -5709,8 +5699,12 @@ impl super::TrapDispatcher {
                             new_v,
                             !tracking.command_down,
                         );
+                        moved_window = Some(window_ptr);
                     }
                     cpu.write_reg(Register::A7, sp + 12);
+                    if let Some(window) = moved_window {
+                        self.arm_window_def_move(cpu, bus, window);
+                    }
                 }
                 Ok(())
             }

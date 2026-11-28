@@ -1362,7 +1362,7 @@ impl super::TrapDispatcher {
                         // scratch regions into the port and lets later region
                         // edits corrupt clipping state.
                         // Inside Macintosh Volume I, p. I-192
-                        let Some(dst_ptr) = Self::ensure_region_capacity(bus, dst_handle, size)
+                        let Some(dst_ptr) = self.ensure_region_capacity(bus, dst_handle, size)
                         else {
                             return Some(Ok(()));
                         };
@@ -1409,7 +1409,7 @@ impl super::TrapDispatcher {
                     if clip_rgn_ptr != 0 {
                         let rgn_size = bus.read_word(clip_rgn_ptr) as u32;
                         let Some(dest_ptr) =
-                            Self::ensure_region_capacity(bus, rgn_handle, rgn_size)
+                            self.ensure_region_capacity(bus, rgn_handle, rgn_size)
                         else {
                             return Some(Ok(()));
                         };
@@ -2041,7 +2041,7 @@ impl super::TrapDispatcher {
                     let src_ptr = bus.read_long(src_handle);
                     if src_ptr != 0 {
                         let size = bus.read_word(src_ptr) as u32;
-                        let Some(dst_ptr) = Self::ensure_region_capacity(bus, dst_handle, size)
+                        let Some(dst_ptr) = self.ensure_region_capacity(bus, dst_handle, size)
                         else {
                             return Some(Ok(()));
                         };
@@ -10602,7 +10602,7 @@ impl super::TrapDispatcher {
 
                         let wrote = if let Some((top, left, bottom, right)) = bbox {
                             if rectangle_candidate {
-                                Self::write_region(
+                                self.write_region(
                                     bus,
                                     rgn_handle,
                                     Some((top, left, bottom, right)),
@@ -10610,7 +10610,7 @@ impl super::TrapDispatcher {
                                 )
                             } else {
                                 data_words.push(REGION_STOP);
-                                Self::write_region(
+                                self.write_region(
                                     bus,
                                     rgn_handle,
                                     Some((top, left, bottom, right)),
@@ -10618,7 +10618,7 @@ impl super::TrapDispatcher {
                                 )
                             }
                         } else {
-                            Self::write_region(bus, rgn_handle, None, &[])
+                            self.write_region(bus, rgn_handle, None, &[])
                         };
 
                         if !wrote {
@@ -10627,7 +10627,7 @@ impl super::TrapDispatcher {
                         }
                         wrote_region = true;
                     } else {
-                        Self::write_region(bus, rgn_handle, None, &[]);
+                        self.write_region(bus, rgn_handle, None, &[]);
                         wrote_region = true;
                     }
                     if trace_region_ops_enabled() {
@@ -10885,9 +10885,9 @@ impl super::TrapDispatcher {
                     self.sync_current_port_draw_state(bus);
                     if dst_handle != 0 {
                         if let Some((rows_top, rows)) = Self::recorded_region_rows(&recording) {
-                            Self::write_region_from_rows(bus, dst_handle, rows_top, &rows);
+                            self.write_region_from_rows(bus, dst_handle, rows_top, &rows);
                         } else {
-                            Self::write_region(bus, dst_handle, None, &[]);
+                            self.write_region(bus, dst_handle, None, &[]);
                         }
                     }
                 }
@@ -10917,7 +10917,7 @@ impl super::TrapDispatcher {
                 let dh = bus.read_word(sp + 2) as i16;
                 let rgn_handle = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
-                Self::inset_region(bus, rgn_handle, dh, dv);
+                self.inset_region(bus, rgn_handle, dh, dv);
                 Ok(())
             }
 
@@ -11007,7 +11007,7 @@ impl super::TrapDispatcher {
                 let src_a = bus.read_long(sp + 8);
                 cpu.write_reg(Register::A7, sp + 12);
                 if src_a != 0 && src_b != 0 && dst_handle != 0 {
-                    Self::write_region_boolean_op(
+                    self.write_region_boolean_op(
                         bus,
                         dst_handle,
                         src_a,
@@ -11042,7 +11042,7 @@ impl super::TrapDispatcher {
                 let src_a = bus.read_long(sp + 8);
                 cpu.write_reg(Register::A7, sp + 12);
                 if src_a != 0 && src_b != 0 && dst_handle != 0 {
-                    Self::write_region_boolean_op(
+                    self.write_region_boolean_op(
                         bus,
                         dst_handle,
                         src_a,
@@ -11077,7 +11077,7 @@ impl super::TrapDispatcher {
                 let src_a = bus.read_long(sp + 8);
                 cpu.write_reg(Register::A7, sp + 12);
                 if src_a != 0 && dst_handle != 0 {
-                    Self::write_region_boolean_op(
+                    self.write_region_boolean_op(
                         bus,
                         dst_handle,
                         src_a,
@@ -11112,7 +11112,7 @@ impl super::TrapDispatcher {
                 let src_a = bus.read_long(sp + 8);
                 cpu.write_reg(Register::A7, sp + 12);
                 if src_a != 0 && src_b != 0 && dst_handle != 0 {
-                    Self::write_region_boolean_op(
+                    self.write_region_boolean_op(
                         bus,
                         dst_handle,
                         src_a,
@@ -19792,13 +19792,14 @@ impl super::TrapDispatcher {
     }
 
     fn restore_port_region(
+        &self,
         bus: &mut MacMemoryBus,
         port: u32,
         offset: u32,
         region: &super::dispatch::PortRegionSnapshot,
     ) {
         bus.write_long(port + offset, region.handle);
-        let Some(ptr) = Self::ensure_region_capacity(bus, region.handle, region.bytes.len() as u32)
+        let Some(ptr) = self.ensure_region_capacity(bus, region.handle, region.bytes.len() as u32)
         else {
             return;
         };
@@ -19846,10 +19847,10 @@ impl super::TrapDispatcher {
             self.resolved_port_color_fields.remove(&snapshot.port);
         }
         if let Some(region) = &snapshot.vis_region {
-            Self::restore_port_region(bus, snapshot.port, 24, region);
+            self.restore_port_region(bus, snapshot.port, 24, region);
         }
         if let Some(region) = &snapshot.clip_region {
-            Self::restore_port_region(bus, snapshot.port, 28, region);
+            self.restore_port_region(bus, snapshot.port, 28, region);
         }
     }
 
@@ -23127,7 +23128,12 @@ impl super::TrapDispatcher {
         ))
     }
 
-    fn ensure_region_capacity(bus: &mut MacMemoryBus, rgn_handle: u32, size: u32) -> Option<u32> {
+    fn ensure_region_capacity(
+        &self,
+        bus: &mut MacMemoryBus,
+        rgn_handle: u32,
+        size: u32,
+    ) -> Option<u32> {
         if rgn_handle == 0 {
             return None;
         }
@@ -23136,7 +23142,7 @@ impl super::TrapDispatcher {
         if current_ptr != 0 {
             match bus.get_alloc_size(current_ptr) {
                 Some(current_size) if current_size >= size => return Some(current_ptr),
-                None => return Some(current_ptr),
+                None => return self.ensure_process_region_capacity(bus, rgn_handle, size),
                 _ => {}
             }
         }
@@ -23154,7 +23160,33 @@ impl super::TrapDispatcher {
         Some(new_ptr)
     }
 
+    /// A region whose block the classic bus allocator did not hand out, such
+    /// as a native PowerPC handle passed to 68K definition code, is sized and
+    /// grown by the process Memory Manager that owns it, as SetHandleSize
+    /// would grow it. A block neither
+    /// knows is written in place.
+    fn ensure_process_region_capacity(
+        &self,
+        bus: &mut MacMemoryBus,
+        rgn_handle: u32,
+        size: u32,
+    ) -> Option<u32> {
+        let current_ptr = bus.read_long(rgn_handle);
+        let memory_manager = self.process_memory_manager();
+        let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager.attach_classic_memory_bus(bus);
+        match memory_manager.process_handle_size(bus, rgn_handle) {
+            Some(current_size) if current_size < size => {
+                (memory_manager.set_process_handle_size(bus, rgn_handle, size) == 0)
+                    .then(|| bus.read_long(rgn_handle))
+                    .filter(|ptr| *ptr != 0)
+            }
+            _ => Some(current_ptr),
+        }
+    }
+
     pub(super) fn write_region(
+        &self,
         bus: &mut MacMemoryBus,
         rgn_handle: u32,
         bbox: Option<(i16, i16, i16, i16)>,
@@ -23170,7 +23202,7 @@ impl super::TrapDispatcher {
         } else {
             REGION_HEADER_SIZE + (data_words.len() as u32 * 2)
         };
-        let Some(rgn_ptr) = Self::ensure_region_capacity(bus, rgn_handle, size) else {
+        let Some(rgn_ptr) = self.ensure_region_capacity(bus, rgn_handle, size) else {
             return false;
         };
 
@@ -23205,7 +23237,7 @@ impl super::TrapDispatcher {
         let onto = rect(dst);
         let bounds = rect(ptr + 2);
         if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
-            Self::write_region(bus, handle, None, &[]);
+            self.write_region(bus, handle, None, &[]);
             return;
         }
         let map = |value: i16, axis: usize| {
@@ -23226,9 +23258,9 @@ impl super::TrapDispatcher {
         let (top, bottom) = (v0.min(v1), v0.max(v1));
         let (left, right) = (h0.min(h1), h0.max(h1));
         if top == bottom || left == right {
-            Self::write_region(bus, handle, None, &[]);
+            self.write_region(bus, handle, None, &[]);
         } else if size <= REGION_HEADER_SIZE {
-            Self::write_region(bus, handle, Some((top, left, bottom, right)), &[]);
+            self.write_region(bus, handle, Some((top, left, bottom, right)), &[]);
         } else {
             let source = Self::region_rows_for_band(bus, handle, bounds[0], bounds[2]);
             let mut rows = vec![Vec::new(); Self::region_band_height(top, bottom)];
@@ -23255,7 +23287,7 @@ impl super::TrapDispatcher {
             }
             // Re-encode differential rows so coincident edges introduced by
             // shrinking disappear and empty/rectangular results stay canonical.
-            Self::write_region_from_rows(bus, handle, top, &rows);
+            self.write_region_from_rows(bus, handle, top, &rows);
         }
     }
 
@@ -23413,6 +23445,7 @@ impl super::TrapDispatcher {
     }
 
     pub(super) fn write_region_from_rows(
+        &self,
         bus: &mut MacMemoryBus,
         rgn_handle: u32,
         rows_top: i16,
@@ -23439,7 +23472,7 @@ impl super::TrapDispatcher {
         }
 
         let Some((top, left, bottom, right)) = bbox else {
-            return Self::write_region(bus, rgn_handle, None, &[]);
+            return self.write_region(bus, rgn_handle, None, &[]);
         };
 
         let first_row = &rows[Self::region_row_index(top, rows_top)];
@@ -23451,7 +23484,7 @@ impl super::TrapDispatcher {
                 rows[Self::region_row_index(y, rows_top)] == *first_row
             });
         if rectangular {
-            return Self::write_region(bus, rgn_handle, Some((top, left, bottom, right)), &[]);
+            return self.write_region(bus, rgn_handle, Some((top, left, bottom, right)), &[]);
         }
 
         let mut data_words = Vec::new();
@@ -23472,7 +23505,7 @@ impl super::TrapDispatcher {
             previous_row = current_row;
         }
         data_words.push(REGION_STOP);
-        Self::write_region(
+        self.write_region(
             bus,
             rgn_handle,
             Some((top, left, bottom, right)),
@@ -23481,6 +23514,7 @@ impl super::TrapDispatcher {
     }
 
     pub(super) fn write_region_boolean_op(
+        &self,
         bus: &mut MacMemoryBus,
         dst_handle: u32,
         src_a: u32,
@@ -23493,18 +23527,18 @@ impl super::TrapDispatcher {
         let band = match op {
             RegionBooleanOp::Intersection => {
                 let (Some(a), Some(b)) = (bbox_a, bbox_b) else {
-                    return Self::write_region(bus, dst_handle, None, &[]);
+                    return self.write_region(bus, dst_handle, None, &[]);
                 };
                 let top = a.0.max(b.0);
                 let bottom = a.2.min(b.2);
                 if bottom <= top {
-                    return Self::write_region(bus, dst_handle, None, &[]);
+                    return self.write_region(bus, dst_handle, None, &[]);
                 }
                 (top, bottom)
             }
             RegionBooleanOp::Difference => {
                 let Some(a) = bbox_a else {
-                    return Self::write_region(bus, dst_handle, None, &[]);
+                    return self.write_region(bus, dst_handle, None, &[]);
                 };
                 (a.0, a.2)
             }
@@ -23512,13 +23546,13 @@ impl super::TrapDispatcher {
                 (Some(a), Some(b)) => (a.0.min(b.0), a.2.max(b.2)),
                 (Some(a), None) => (a.0, a.2),
                 (None, Some(b)) => (b.0, b.2),
-                (None, None) => return Self::write_region(bus, dst_handle, None, &[]),
+                (None, None) => return self.write_region(bus, dst_handle, None, &[]),
             },
         };
 
         let (top, bottom) = band;
         if bottom <= top {
-            return Self::write_region(bus, dst_handle, None, &[]);
+            return self.write_region(bus, dst_handle, None, &[]);
         }
         let rows_a = Self::region_rows_for_band(bus, src_a, top, bottom);
         let rows_b = Self::region_rows_for_band(bus, src_b, top, bottom);
@@ -23527,7 +23561,7 @@ impl super::TrapDispatcher {
             .zip(rows_b.iter())
             .map(|(lhs, rhs)| Self::combine_region_rows(lhs, rhs, op))
             .collect::<Vec<_>>();
-        Self::write_region_from_rows(bus, dst_handle, top, &rows)
+        self.write_region_from_rows(bus, dst_handle, top, &rows)
     }
 
     pub(super) fn offset_region(bus: &mut MacMemoryBus, rgn_handle: u32, dh: i16, dv: i16) {
@@ -23583,7 +23617,7 @@ impl super::TrapDispatcher {
         region_rows::inset_row(row, dh)
     }
 
-    fn inset_region(bus: &mut MacMemoryBus, rgn_handle: u32, dh: i16, dv: i16) {
+    fn inset_region(&self,bus: &mut MacMemoryBus, rgn_handle: u32, dh: i16, dv: i16) {
         let Some((rgn_ptr, rgn_size)) = Self::region_ptr_and_size(bus, rgn_handle) else {
             return;
         };
@@ -23596,7 +23630,7 @@ impl super::TrapDispatcher {
         let bottom = bus.read_word(rgn_ptr + 6) as i16;
         let right = bus.read_word(rgn_ptr + 8) as i16;
         if bottom <= top || right <= left {
-            let _ = Self::write_region(bus, rgn_handle, None, &[]);
+            let _ = self.write_region(bus, rgn_handle, None, &[]);
             return;
         }
 
@@ -23605,12 +23639,12 @@ impl super::TrapDispatcher {
         let new_bottom = Self::clamp_region_coord(i32::from(bottom) - i32::from(dv));
         let new_right = Self::clamp_region_coord(i32::from(right) - i32::from(dh));
         if new_bottom <= new_top || new_right <= new_left {
-            let _ = Self::write_region(bus, rgn_handle, None, &[]);
+            let _ = self.write_region(bus, rgn_handle, None, &[]);
             return;
         }
 
         if rgn_size <= REGION_HEADER_SIZE {
-            let _ = Self::write_region(
+            let _ = self.write_region(
                 bus,
                 rgn_handle,
                 Some((new_top, new_left, new_bottom, new_right)),
@@ -23667,7 +23701,7 @@ impl super::TrapDispatcher {
             }
         }
 
-        let _ = Self::write_region_from_rows(bus, rgn_handle, new_top, &rows);
+        let _ = self.write_region_from_rows(bus, rgn_handle, new_top, &rows);
     }
 
     #[inline]

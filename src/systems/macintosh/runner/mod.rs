@@ -5234,6 +5234,13 @@ impl FixtureRunner {
             let height = (bottom - top).max(1) as u16;
             self.dispatcher.screen_mode = (scrn_base, rb, width, height, pixel_size);
         }
+        // A native process's Window Manager port is its main screen GWorld,
+        // which GetWMgrPort and GetCWMgrPort answer for PowerPC code. Classic
+        // code the process runs through Mixed Mode, such as an application
+        // window definition, draws in the same port (Macintosh Toolbox
+        // Essentials (1992), pp. 4-113--4-114).
+        self.dispatcher.window_manager_port = crate::loader::ppc::PPC_MAIN_GWORLD;
+        self.dispatcher.window_manager_cport = crate::loader::ppc::PPC_MAIN_GWORLD;
 
         self.halted = false;
         self.halted_trap = None;

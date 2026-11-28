@@ -3681,8 +3681,8 @@ impl super::TrapDispatcher {
             }
         };
         let view = (view_rect.0 < view_rect.2 && view_rect.1 < view_rect.3).then_some(view_rect);
-        if !Self::write_region(bus, view_rgn, view, &[])
-            || !Self::write_region_boolean_op(
+        if !self.write_region(bus, view_rgn, view, &[])
+            || !self.write_region_boolean_op(
                 bus,
                 sect_rgn,
                 clip,

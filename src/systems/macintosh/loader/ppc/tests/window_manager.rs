@@ -12082,6 +12082,90 @@ fn window_frame_under_the_menu_bar_leaves_the_menu_bar_pixels() {
 }
 
 #[test]
+fn application_definition_structure_regions_follow_their_window() {
+    // An application WDEF calculates its own structure region (wCalcRgns,
+    // Macintosh Toolbox Essentials (1992), p. 4-123). The native Window
+    // Manager keeps that region's margins and shape as the window moves,
+    // rather than replacing it with a standard frame.
+    let pef = synthetic_pef_with_import(b"NewCWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 32]);
+    ppc_write_rect(&mut loaded.memory, scratch, 60, 60, 100, 160).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = scratch + 8;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 128 * 16 + 5;
+    loaded.cpu.gpr[8] = u32::MAX;
+    loaded.cpu.gpr[9] = 1;
+    loaded.cpu.gpr[10] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    let window = loaded.cpu.gpr[3];
+    assert_ne!(window, 0);
+    let structure_rgn = loaded
+        .memory
+        .read_u32_be(window + PPC_CWINDOW_STRUCTURE_RGN_OFFSET)
+        .unwrap();
+    // The definition's region: an 11-pixel drag strip above the content,
+    // a one-pixel frame, and a two-pixel shadow along the bottom.
+    let words: [i16; 20] = [
+        40, 49, 59, 103, 163, // size and bounding box
+        49, 59, 161, 32767, // frame rows
+        101, 59, 62, 161, 163, 32767, // shadow rows
+        103, 62, 163, 32767, // end of shadow
+        32767,
+    ];
+    let storage: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+    let mut last_mem_error = PPC_NO_ERR;
+    assert_eq!(
+        ppc_write_region_storage(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            structure_rgn,
+            &storage,
+        ),
+        PPC_NO_ERR
+    );
+
+    let moved = (70, 80, 110, 180);
+    assert_eq!(
+        ppc_window_structure_for_content(&mut loaded.memory, window, moved),
+        (59, 79, 113, 183)
+    );
+    ppc_update_window_manager_regions(&mut loaded.memory, window, moved).unwrap();
+    let content_rgn = loaded
+        .memory
+        .read_u32_be(window + PPC_CWINDOW_CONTENT_RGN_OFFSET)
+        .unwrap();
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, content_rgn), Some(moved));
+    // Moving keeps the region's shape: every coordinate shifts by the
+    // content's offset of (10, 20).
+    let structure_ptr = loaded.memory.read_u32_be(structure_rgn).unwrap();
+    let moved_words: Vec<i16> = (0..20)
+        .map(|index| loaded.memory.read_u16_be(structure_ptr + index * 2).unwrap() as i16)
+        .collect();
+    assert_eq!(
+        moved_words,
+        [
+            40, 59, 79, 113, 183, 59, 79, 181, 32767, 111, 79, 82, 181, 183, 32767, 113, 82,
+            183, 32767, 32767,
+        ]
+    );
+
+    // A standard definition keeps its fixed frame geometry.
+    assert_eq!(
+        ppc_window_structure_for_content(&mut loaded.memory, PPC_MAIN_GWORLD, moved),
+        ppc_window_structure_bounds(0, moved)
+    );
+}
+
+#[test]
 fn get_aux_win_with_nil_window_returns_the_default_auxiliary_record() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetAuxWin")).unwrap();
     let out = PPC_DATA_BASE + 0x1300;

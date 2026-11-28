@@ -364,7 +364,7 @@
 
     #[test]
     fn growing_region_releases_each_superseded_backing_allocation() {
-        let (_d, _cpu, mut bus) = setup();
+        let (d, _cpu, mut bus) = setup();
         let handle = bus.alloc(4);
         let initial_ptr = bus.alloc(super::REGION_HEADER_SIZE);
         bus.write_long(handle, initial_ptr);
@@ -373,7 +373,7 @@
         let mut previous_ptr = initial_ptr;
         for edge_count in 2..64 {
             let data_words = (0..edge_count).map(|edge| edge as i16).collect::<Vec<_>>();
-            assert!(TrapDispatcher::write_region(
+            assert!(d.write_region(
                 &mut bus,
                 handle,
                 Some((0, 0, 1, edge_count as i16)),
@@ -567,13 +567,13 @@
         bus.write_word(port + 6, 0xC000);
         let vis_rgn = bus.read_long(port + 24);
         let clip_rgn = bus.read_long(port + 28);
-        assert!(TrapDispatcher::write_region(
+        assert!(d.write_region(
             &mut bus,
             vis_rgn,
             Some((0, 0, 342, 512)),
             &[],
         ));
-        assert!(TrapDispatcher::write_region(
+        assert!(d.write_region(
             &mut bus,
             clip_rgn,
             Some((-32767, -32767, 32767, 32767)),
@@ -730,12 +730,13 @@
     }
 
     fn make_complex_rgn(
+        d: &TrapDispatcher,
         bus: &mut MacMemoryBus,
         bbox: (i16, i16, i16, i16),
         data_words: &[i16],
     ) -> u32 {
         let handle = bus.alloc(4);
-        assert!(TrapDispatcher::write_region(
+        assert!(d.write_region(
             bus,
             handle,
             Some(bbox),
@@ -762,7 +763,7 @@
             // A two-pixel hole makes this a genuinely complex region and gives
             // FrameRgn an interior boundary to outline as well.
             rows[5] = vec![10, 14, 16, 20];
-            assert!(TrapDispatcher::write_region_from_rows(
+            assert!(d.write_region_from_rows(
                 &mut bus, rgn, 10, &rows
             ));
             assert!(bus.read_word(bus.read_long(rgn)) > super::REGION_HEADER_SIZE as u16);
@@ -2922,9 +2923,10 @@
         bus.write_long(port + 2, pixmap_handle);
         bus.write_word(port + 6, 0xC000);
         write_rect(&mut bus, port + 16, 0, 0, 6, 16);
-        let vis = make_complex_rgn(&mut bus, (0, 0, 6, 16), &[]);
+        let vis = make_complex_rgn(&d, &mut bus, (0, 0, 6, 16), &[]);
         let clip = if notched_clip {
             make_complex_rgn(
+                &d,
                 &mut bus,
                 (3, 4, 5, 10),
                 &[
@@ -2940,7 +2942,7 @@
                 ],
             )
         } else {
-            make_complex_rgn(&mut bus, (3, 4, 5, 10), &[])
+            make_complex_rgn(&d, &mut bus, (3, 4, 5, 10), &[])
         };
         bus.write_long(port + 24, vis);
         bus.write_long(port + 28, clip);
@@ -3010,15 +3012,16 @@
             bus.write_long(port + 2, pixmap_handle);
             bus.write_word(port + 6, 0xC000);
             write_rect(&mut bus, port + 16, 0, 0, 8, 16);
-            let vis = make_complex_rgn(&mut bus, (0, 0, 8, 16), &[]);
+            let vis = make_complex_rgn(&d, &mut bus, (0, 0, 8, 16), &[]);
             let clip = if complex_clip {
                 make_complex_rgn(
+                    &d,
                     &mut bus,
                     (2, 3, 6, 15),
                     &[2, 3, 15, super::REGION_STOP, 6, 3, 15, super::REGION_STOP, super::REGION_STOP],
                 )
             } else {
-                make_complex_rgn(&mut bus, (2, 3, 6, 15), &[])
+                make_complex_rgn(&d, &mut bus, (2, 3, 6, 15), &[])
             };
             bus.write_long(port + 24, vis);
             bus.write_long(port + 28, clip);
@@ -3090,9 +3093,10 @@
         let port = bus.alloc(96);
         write_bitmap_1bpp(&mut bus, port + 2, base, 5, (0, 0, 6, 40));
         write_rect(&mut bus, port + 16, 0, 0, 6, 40);
-        let vis = make_complex_rgn(&mut bus, (0, 0, 6, 40), &[]);
+        let vis = make_complex_rgn(&d, &mut bus, (0, 0, 6, 40), &[]);
         let clip = if notched_clip {
             make_complex_rgn(
+                &d,
                 &mut bus,
                 (2, 5, 5, 27),
                 &[
@@ -3112,7 +3116,7 @@
                 ],
             )
         } else {
-            make_complex_rgn(&mut bus, (2, 5, 5, 27), &[])
+            make_complex_rgn(&d, &mut bus, (2, 5, 5, 27), &[])
         };
         bus.write_long(port + 24, vis);
         bus.write_long(port + 28, clip);
@@ -3145,7 +3149,7 @@
             4 => {
                 let handle = bus.alloc(4);
                 let rows = vec![vec![3, 29], vec![3, 12, 14, 29], vec![3, 29], vec![3, 29]];
-                assert!(TrapDispatcher::write_region_from_rows(
+                assert!(d.write_region_from_rows(
                     &mut bus, handle, 1, &rows
                 ));
                 d.draw_rgn(&mut cpu, &mut bus, handle, op);
@@ -3318,8 +3322,8 @@
         let port = bus.alloc(108);
         write_bitmap_1bpp(&mut bus, port + 2, base, 2, (0, 0, 4, 16));
         write_rect(&mut bus, port + 16, 0, 0, 4, 16);
-        let vis = make_complex_rgn(&mut bus, (0, 0, 4, 16), &[]);
-        let clip = make_complex_rgn(&mut bus, (0, 0, 4, 16), &[]);
+        let vis = make_complex_rgn(&d, &mut bus, (0, 0, 4, 16), &[]);
+        let clip = make_complex_rgn(&d, &mut bus, (0, 0, 4, 16), &[]);
         bus.write_long(port + 24, vis);
         bus.write_long(port + 28, clip);
         d.set_current_port_state(&mut bus, &mut cpu, port, None);
@@ -3396,6 +3400,7 @@
                             );
                         }
                         let clip = make_complex_rgn(
+                            &d,
                             &mut bus,
                             (2, 4, 12, 30),
                             &[
@@ -3541,7 +3546,7 @@
                     let handle = bus.alloc(4);
                     let mut rows = vec![vec![5, 31]; 7];
                     rows[3] = vec![5, 12, 20, 31];
-                    assert!(TrapDispatcher::write_region_from_rows(
+                    assert!(d.write_region_from_rows(
                         &mut bus, handle, 3, &rows
                     ));
                     d.draw_rgn(&mut cpu, &mut bus, handle, op);
@@ -3668,7 +3673,7 @@
         bus.write_long(port + 2, pixmap_handle);
         bus.write_word(port + 6, 0xC000);
         write_rect(&mut bus, port + 16, 0, 0, 40, 64);
-        let vis = make_complex_rgn(&mut bus, (0, 0, 40, 64), &[]);
+        let vis = make_complex_rgn(&d, &mut bus, (0, 0, 40, 64), &[]);
         bus.write_long(port + 24, vis);
         bus.write_long(port + 28, vis);
         d.set_current_port_state(&mut bus, &mut cpu, port, None);
@@ -3837,8 +3842,9 @@
         bus.write_word(port + 6, 0xC000);
         write_rect(&mut bus, port + 16, 0, 0, 2, 4);
 
-        let vis = make_complex_rgn(&mut bus, (0, 0, 2, 4), &[]);
+        let vis = make_complex_rgn(&d, &mut bus, (0, 0, 2, 4), &[]);
         let clip = make_complex_rgn(
+            &d,
             &mut bus,
             (0, 0, 2, 4),
             &[
@@ -4110,6 +4116,7 @@
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let port_ptr = 0x181000u32;
         let vis = make_complex_rgn(
+            &d,
             &mut bus,
             (0, 0, 40, 60),
             &[
@@ -4226,6 +4233,7 @@
         bus.write_long(port_ptr + 28, clip_handle);
 
         let src = make_complex_rgn(
+            &d,
             &mut bus,
             (0, 0, 4, 6),
             &[
@@ -4307,6 +4315,7 @@
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let port_ptr = 0x181000u32;
         let clip = make_complex_rgn(
+            &d,
             &mut bus,
             (0, 0, 4, 6),
             &[
@@ -4871,7 +4880,7 @@
         for (dst, top, expected) in cases {
             let (mut d, mut cpu, mut bus) = setup();
             let handle = bus.alloc(4);
-            assert!(TrapDispatcher::write_region_from_rows(
+            assert!(d.write_region_from_rows(
                 &mut bus, handle, 10, &source
             ));
             let src_ptr = bus.alloc(8);
@@ -4900,7 +4909,7 @@
     fn maprgn_canonicalizes_empty_results_and_handles_extreme_products() {
         for dst in [(5, 7, 5, 12), (5, 7, 9, 7)] {
             let (mut d, mut cpu, mut bus) = setup();
-            let handle = make_complex_rgn(&mut bus, (10, 20, 14, 26), &[]);
+            let handle = make_complex_rgn(&d, &mut bus, (10, 20, 14, 26), &[]);
             let src_ptr = bus.alloc(8);
             let dst_ptr = bus.alloc(8);
             write_rect(&mut bus, src_ptr, 10, 20, 14, 26);
@@ -4916,7 +4925,7 @@
             assert_eq!(bus.read_word(bus.read_long(handle)), 10);
         }
         let (mut d, mut cpu, mut bus) = setup();
-        let handle = make_complex_rgn(&mut bus, (-32768, -32768, 32767, 32767), &[]);
+        let handle = make_complex_rgn(&d, &mut bus, (-32768, -32768, 32767, 32767), &[]);
         let src_ptr = bus.alloc(8);
         let dst_ptr = bus.alloc(8);
         write_rect(&mut bus, src_ptr, -32768, -32768, 32767, 32767);
@@ -4936,7 +4945,7 @@
         let (mut d, mut cpu, mut bus) = setup();
         let rows = vec![vec![20, 26], vec![20, 22, 24, 26], vec![20, 26]];
         let handle = bus.alloc(4);
-        assert!(TrapDispatcher::write_region_from_rows(
+        assert!(d.write_region_from_rows(
             &mut bus, handle, 10, &rows
         ));
         let ptr = bus.read_long(handle);
@@ -5477,6 +5486,7 @@
         // source region; complex scanline data is part of that structure.
         let (mut d, mut cpu, mut bus) = setup();
         let src = make_complex_rgn(
+            &d,
             &mut bus,
             (0, 0, 4, 6),
             &[
@@ -5652,6 +5662,7 @@
         let (mut d, mut cpu, mut bus) = setup();
 
         let complex = make_complex_rgn(
+            &d,
             &mut bus,
             (0, 0, 4, 6),
             &[
@@ -5711,6 +5722,7 @@
         let (mut d, mut cpu, mut bus) = setup();
 
         let unordered = make_complex_rgn(
+            &d,
             &mut bus,
             (0, 0, 1, 6),
             &[
@@ -5730,6 +5742,7 @@
             ],
         );
         let ordered = make_complex_rgn(
+            &d,
             &mut bus,
             (0, 0, 1, 6),
             &[
@@ -5770,6 +5783,7 @@
         // region shape. Complex scanline coordinates must move with the bbox.
         let (mut d, mut cpu, mut bus) = setup();
         let rgn = make_complex_rgn(
+            &d,
             &mut bus,
             (0, 0, 3, 6),
             &[
@@ -5826,7 +5840,7 @@
             vec![0, 10],
             vec![0, 10],
         ];
-        assert!(TrapDispatcher::write_region_from_rows(
+        assert!(d.write_region_from_rows(
             &mut bus, rgn, 0, &rows
         ));
         assert!(
@@ -8348,8 +8362,9 @@
 
     /// The complex region the row-path tests share: rows 0-3 full, rows 4-7
     /// only the outer quarters, rows 8-11 full, rows 12-15 empty.
-    fn make_row_path_test_rgn(bus: &mut MacMemoryBus) -> u32 {
+    fn make_row_path_test_rgn(d: &TrapDispatcher, bus: &mut MacMemoryBus) -> u32 {
         make_complex_rgn(
+            d,
             bus,
             (0, 0, 16, 16),
             &[
@@ -9830,7 +9845,7 @@
 
     #[test]
     fn copy_bits_src_copy_rows_follow_region_spans_and_decline_without_writing() {
-        let (_d, _cpu, mut bus) = setup_with_port();
+        let (d, _cpu, mut bus) = setup_with_port();
         let (src_base, dst_base) = alloc_row_path_test_bitmaps(&mut bus);
         let info = |base| CopyBitmapInfo {
             base,
@@ -9843,7 +9858,7 @@
             ctab_handle: 0,
         };
         let (src_info, dst_info) = (info(src_base), info(dst_base));
-        let vis = make_row_path_test_rgn(&mut bus);
+        let vis = make_row_path_test_rgn(&d, &mut bus);
         let cache = TrapDispatcher::build_region_membership_cache(&bus, vis, 0, 16)
             .expect("complex region decodes");
         let mut table = [0u8; 256];
@@ -9937,7 +9952,7 @@
         // through StdBits. Compare the row helper against the former pixel
         // operation using a saved source, including an overlapping target.
         let run = |rows: bool, overlap: bool, translated: bool, first_row: u32, shifted: bool| {
-            let (_d, _cpu, mut bus) = setup_with_port();
+            let (d, _cpu, mut bus) = setup_with_port();
             let stride = if shifted { 20 } else { 16 };
             let (bounds_top, bounds_left, src_left, dst_left, width) = if shifted {
                 (-5, 7, 10, 2, 12)
@@ -9969,7 +9984,7 @@
             // This also makes the overlap test catch a row-at-a-time copy
             // that accidentally reads a destination written on a prior row.
             bus.fill_bytes(src_base, src_bytes, 42);
-            let vis = make_row_path_test_rgn(&mut bus);
+            let vis = make_row_path_test_rgn(&d, &mut bus);
             let cache = TrapDispatcher::build_region_membership_cache(&bus, vis, 0, 16).unwrap();
             let table = std::array::from_fn(|i| if translated { 255 - i as u8 } else { i as u8 });
             let src_info = CopyBitmapInfo {
@@ -10089,7 +10104,7 @@
                     let palette = std::array::from_fn(|i| [i as u8; 3]);
                     bus.enable_outline_presentation((dst_base, 16, 16, 16, 8), palette, 4);
                 }
-                let vis = make_row_path_test_rgn(&mut bus);
+                let vis = make_row_path_test_rgn(&d, &mut bus);
                 let clip = rect_rgn_handle(&mut bus);
                 install_row_path_test_port(&mut d, &mut cpu, &mut bus, port, dst_base, vis, clip);
                 let src_pixmap = bus.alloc(50);
@@ -10141,7 +10156,7 @@
                     bus.enable_outline_presentation((dst_base, 16, 16, 16, 8), palette, 4);
                 }
                 let vis = rect_rgn_handle(&mut bus);
-                let clip = make_row_path_test_rgn(&mut bus);
+                let clip = make_row_path_test_rgn(&d, &mut bus);
                 let dst_pixmap = install_row_path_test_port(
                     &mut d, &mut cpu, &mut bus, port, dst_base, vis, clip,
                 );
@@ -12463,7 +12478,7 @@
         // a hole at x 1..3 where another window covers this one.
         let vis_handle = bus.alloc(4);
         let rows = vec![vec![0, 4], vec![0, 1, 3, 4]];
-        assert!(TrapDispatcher::write_region_from_rows(&mut bus, vis_handle, 0, &rows));
+        assert!(d.write_region_from_rows(&mut bus, vis_handle, 0, &rows));
         bus.write_long(port + 24, vis_handle);
 
         let clip = bus.alloc(10);
@@ -12559,7 +12574,7 @@
         // Non-rectangular region: row 0 has [0, 4), row 1 has [2, 4)
         let rgn = bus.alloc(4);
         let rows = vec![vec![0, 4], vec![2, 4]];
-        assert!(TrapDispatcher::write_region_from_rows(&mut bus, rgn, 0, &rows));
+        assert!(d.write_region_from_rows(&mut bus, rgn, 0, &rows));
 
         let pp_handle = make_raw_color_pixpat_handle(&mut bus);
 
@@ -14245,7 +14260,7 @@
         write_rect(&mut bus, dst_rect, 0, 0, 1, 16);
 
         let mask_rgn = bus.alloc(4);
-        assert!(TrapDispatcher::write_region(
+        assert!(d.write_region(
             &mut bus,
             mask_rgn,
             Some((0, 4, 1, 12)),
@@ -14298,7 +14313,7 @@
         write_rect(&mut bus, dst_rect, 0, 0, 1, 16);
 
         let mask_rgn = bus.alloc(4);
-        assert!(TrapDispatcher::write_region(
+        assert!(d.write_region(
             &mut bus,
             mask_rgn,
             Some((0, 4, 1, 12)),
@@ -15823,7 +15838,7 @@
         write_rect(&mut bus, dst_rect, 0, 0, 1, 4);
 
         let mask_rgn = bus.alloc(4);
-        assert!(TrapDispatcher::write_region(&mut bus, mask_rgn, None, &[]));
+        assert!(d.write_region(&mut bus, mask_rgn, None, &[]));
 
         bus.write_long(TEST_SP, mask_rgn);
         bus.write_word(TEST_SP + 4, 0u16);
@@ -15888,7 +15903,7 @@
         write_rect(&mut bus, dst_rect, 0, 0, 1, 4);
 
         let mask_rgn = bus.alloc(4);
-        assert!(TrapDispatcher::write_region(&mut bus, mask_rgn, None, &[]));
+        assert!(d.write_region(&mut bus, mask_rgn, None, &[]));
 
         bus.write_long(TEST_SP, mask_rgn);
         bus.write_word(TEST_SP + 4, 0u16);
@@ -27206,7 +27221,7 @@ fn copy_bits_converts_between_direct_color_depths() {
             super::REGION_STOP,
             super::REGION_STOP,
         ];
-        assert!(TrapDispatcher::write_region(
+        assert!(d.write_region(
             &mut bus,
             clip_rgn,
             Some((0, 0, 2, 4)),
@@ -31072,8 +31087,8 @@ fn copy_bits_converts_between_direct_color_depths() {
             let port = bus.alloc(108);
             write_bitmap_1bpp(&mut bus, port + 2, base, 1, (0, 0, 8, 8));
             write_rect(&mut bus, port + 16, 0, 0, 8, 8);
-            let vis = make_complex_rgn(&mut bus, (0, 0, 8, 8), &[]);
-            let clip = make_complex_rgn(&mut bus, (1, 1, 7, 7), &[]);
+            let vis = make_complex_rgn(&d, &mut bus, (0, 0, 8, 8), &[]);
+            let clip = make_complex_rgn(&d, &mut bus, (1, 1, 7, 7), &[]);
             bus.write_long(port + 24, vis);
             bus.write_long(port + 28, clip);
             bus.write_bytes(port + 40, &[0xaa; 8]);
@@ -31147,8 +31162,8 @@ fn copy_bits_converts_between_direct_color_depths() {
                     let port = bus.alloc(108);
                     write_bitmap_1bpp(&mut bus, port + 2, base, 2, (0, 0, 16, 16));
                     write_rect(&mut bus, port + 16, 0, 0, 16, 16);
-                    let vis = make_complex_rgn(&mut bus, (0, 0, 16, 16), &[]);
-                    let clip = make_complex_rgn(&mut bus, (1, 1, 13, 12), &[]);
+                    let vis = make_complex_rgn(&d, &mut bus, (0, 0, 16, 16), &[]);
+                    let clip = make_complex_rgn(&d, &mut bus, (1, 1, 13, 12), &[]);
                     bus.write_long(port + 24, vis);
                     bus.write_long(port + 28, clip);
                     bus.write_bytes(port + 40, &[0xaa; 8]);
@@ -31211,8 +31226,8 @@ fn copy_bits_converts_between_direct_color_depths() {
         let port = bus.alloc(108);
         write_bitmap_1bpp(&mut bus, port + 2, base, 1, (0, 0, 8, 8));
         write_rect(&mut bus, port + 16, 0, 0, 8, 8);
-        let vis = make_complex_rgn(&mut bus, (0, 0, 8, 8), &[]);
-        let clip = make_complex_rgn(&mut bus, (1, 2, 7, 6), &[]);
+        let vis = make_complex_rgn(&d, &mut bus, (0, 0, 8, 8), &[]);
+        let clip = make_complex_rgn(&d, &mut bus, (1, 2, 7, 6), &[]);
         bus.write_long(port + 24, vis);
         bus.write_long(port + 28, clip);
         d.set_current_port_state(&mut bus, &mut cpu, port, None);

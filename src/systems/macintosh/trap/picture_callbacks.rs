@@ -396,7 +396,7 @@ impl TrapDispatcher {
         true
     }
 
-    fn remap_picture_clip(bus: &mut MacMemoryBus, frame: &mut PictureCallbackFrame) -> bool {
+    fn remap_picture_clip(&self, bus: &mut MacMemoryBus, frame: &mut PictureCallbackFrame) -> bool {
         use crate::quickdraw::raster::region_rows;
         let Some(bytes) = frame.picture_clip.as_ref() else {
             return true;
@@ -496,7 +496,7 @@ impl TrapDispatcher {
             if 10 + words * 2 > u16::MAX as usize {
                 return false;
             }
-            if !Self::write_region_from_rows(bus, frame.mapped_clip, top, &rows) {
+            if !self.write_region_from_rows(bus, frame.mapped_clip, top, &rows) {
                 return false;
             }
             bus.write_long(frame.port_state.port + 28, frame.mapped_clip);
@@ -539,7 +539,7 @@ impl TrapDispatcher {
             };
             if command.opcode == 0x01 {
                 frame.picture_clip = Some(command.data.clone());
-                if !Self::remap_picture_clip(bus, &mut frame) {
+                if !self.remap_picture_clip(bus, &mut frame) {
                     frame.commands.clear();
                 }
                 continue;
@@ -551,7 +551,7 @@ impl TrapDispatcher {
                     frame.source[index] =
                         frame.source[index].wrapping_add(if index % 2 == 0 { dv } else { dh });
                 }
-                if frame.picture_clip.is_some() && !Self::remap_picture_clip(bus, &mut frame) {
+                if frame.picture_clip.is_some() && !self.remap_picture_clip(bus, &mut frame) {
                     frame.commands.clear();
                 }
                 continue;
@@ -597,8 +597,7 @@ impl TrapDispatcher {
                 0x0c00 => {
                     if command.data[..2] == [0xff, 0xfe] {
                         frame.source = rect(&command.data[12..20]);
-                        if frame.picture_clip.is_some()
-                            && !Self::remap_picture_clip(bus, &mut frame)
+                        if frame.picture_clip.is_some() && !self.remap_picture_clip(bus, &mut frame)
                         {
                             frame.commands.clear();
                         }
