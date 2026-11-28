@@ -755,6 +755,13 @@ fn hle_import_runner_tracks_quicktime_movie_file_box_and_beginning_state() {
         Some(expected_audio_track)
     );
 
+    loaded.quicktime.movie_gworld = 0x1122;
+    loaded.quicktime.movie_gdevice = 0x3344;
+    let movie_gworld = *loaded.current_gworld;
+    let movie_gdevice = *loaded.current_gdevice;
+    assert_ne!(movie_gworld, loaded.quicktime.movie_gworld);
+    assert_ne!(movie_gdevice, loaded.quicktime.movie_gdevice);
+
     loaded.cpu.pc = loaded.entry_pc;
     loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtNewMovieFromFile;
     loaded.cpu.gpr[3] = movie_out_ptr;
@@ -769,6 +776,8 @@ fn hle_import_runner_tracks_quicktime_movie_file_box_and_beginning_state() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     assert_eq!(loaded.memory.read_u32_be(movie_out_ptr), Some(PPC_QT_MOVIE));
+    assert_eq!(loaded.quicktime.movie_gworld, movie_gworld);
+    assert_eq!(loaded.quicktime.movie_gdevice, movie_gdevice);
     assert_eq!(loaded.quicktime.movie_time_scale, 60);
     assert_eq!(loaded.quicktime.movie_preferred_rate, 0x0001_0000);
     assert_eq!(loaded.quicktime.movie_preferred_volume, 0x0100);
@@ -1938,6 +1947,24 @@ fn cinepak_movie_draw_fixture() -> (PpcLoadedApp, u32, u32) {
     };
 
     (loaded, gworld, base)
+}
+
+#[test]
+fn quicktime_nil_movie_gworld_keeps_the_port_selected_at_call_time() {
+    let (mut loaded, gworld, base) = cinepak_movie_draw_fixture();
+    loaded.current_gworld.with_mut(|port| *port = gworld);
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::QtSetMovieGWorld);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    loaded.current_gworld.with_mut(|port| *port = PPC_MAIN_GWORLD);
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::QtStartMovie);
+
+    assert_eq!(loaded.memory.read_u16_be(base), Some(0x0000));
+    assert_eq!(loaded.memory.read_u16_be(base + 30), Some(0x7fff));
 }
 
 #[test]
