@@ -151,4 +151,4 @@ Click to dismiss the title, then choose New Game from the File menu. Select one 
 
 **Qualification hold:** the active browser run exceeds the unchanged worker-frame limit (51.7 ms versus 50 ms), so browser launch remains disabled.
 
-**Known limitation:** native side counters can stay stale after moves; the measured browser run showed correct counts. The board shows the changed pieces; final scoring has not been verified. Use the 68K version; the PowerPC version currently stops during startup.
+**Known limitation:** side counters can stay stale after moves. The 68K Systemless replay and a Mac OS 8.1 replay in Basilisk II both showed updated pieces with stale counters after legal moves. A separate Systemless browser replay showed updated counts. Final scoring remains unverified. Use the 68K version; the PowerPC version currently stops during startup.
